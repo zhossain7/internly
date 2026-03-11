@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Internly Tracker</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="hero">
+        <h1>Internly</h1>
+        <p>Track internship and grad-role applications in one place.</p>
+      </header>
+
+      <section class="card">
+        <h2>Quick Add</h2>
+        <form id="applicationForm" class="grid-form">
+          <label>
+            Company *
+            <input id="company" name="company" required />
+          </label>
+          <label>
+            Role *
+            <input id="role" name="role" required />
+          </label>
+          <label>
+            Location
+            <input id="location" name="location" />
+          </label>
+          <label>
+            Type
+            <input id="jobType" name="job_type" placeholder="Internship / Graduate" />
+          </label>
+          <label>
+            Deadline
+            <input id="deadline" name="deadline" type="date" />
+          </label>
+          <label>
+            Status
+            <select id="status" name="status"></select>
+          </label>
+          <label class="full-width">
+            Source URL
+            <input id="sourceUrl" name="source_url" placeholder="https://..." />
+          </label>
+          <label class="full-width">
+            Notes
+            <textarea id="notes" name="notes" rows="3"></textarea>
+          </label>
+          <div class="actions full-width">
+            <button type="submit">Save Application</button>
+            <button type="button" id="resetBtn" class="secondary">Clear</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Import From Link</h2>
+        <form id="linkImportForm" class="stack-form">
+          <label>
+            Job Post URL
+            <input id="linkUrl" placeholder="https://company.com/jobs/..." required />
+          </label>
+          <button type="submit">Extract Fields</button>
+        </form>
+        <p class="help-text">After extraction, review the form above and click Save Application.</p>
+      </section>
+
+      <section class="card">
+        <h2>Import From Screenshot</h2>
+        <form id="screenshotForm" class="stack-form">
+          <label>
+            Upload Screenshot
+            <input id="screenshotFile" type="file" accept="image/png,image/jpeg,image/webp" required />
+          </label>
+          <button type="submit">Run OCR + Extract</button>
+        </form>
+        <p class="help-text">
+          Requires <code>tesseract</code> installed on your machine. If missing, use Quick Add or link import.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="table-head">
+          <h2>Your Applications</h2>
+          <label>
+            Filter
+            <select id="filterStatus"></select>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Role</th>
+                <th>Location</th>
+                <th>Deadline</th>
+                <th>Status</th>
+                <th>Source</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="applicationsTbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
