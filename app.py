@@ -35,6 +35,7 @@ ALLOWED_STATUSES = {
     "oa",
     "interview",
     "offer",
+    "accepted",
     "assessment_centre",
     "rejected",
     "ghosted",
@@ -79,8 +80,10 @@ def ensure_status(value: Any) -> str:
         return "wishlist"
     lowered = status.lower().replace("-", "_").replace(" ", "_")
     status_aliases = {
-        "ac": "assessment_centre",
-        "assessmentcentre": "assessment_centre",
+        "ac": "accepted",
+        "assessmentcentre": "accepted",
+        "assessment_center": "accepted",
+        "assessment_centre": "accepted",
     }
     lowered = status_aliases.get(lowered, lowered)
     if lowered not in ALLOWED_STATUSES:
@@ -385,9 +388,9 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_applications_updated_at ON applications(updated_at DESC);"
         )
-        # One-time status correction from earlier naming.
+        # Keep legacy/new labels consistent with backend canonical value.
         conn.execute(
-            "UPDATE applications SET status = 'assessment_centre' WHERE status = 'accepted';"
+            "UPDATE applications SET status = 'accepted' WHERE status = 'assessment_centre';"
         )
         conn.commit()
     finally:

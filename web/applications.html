@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Internly Applications</title>
+    <script>
+      (function () {
+        try {
+          var key = "internly-theme";
+          var saved = window.localStorage.getItem(key);
+          if (saved === "dark" || saved === "light") {
+            document.documentElement.setAttribute("data-theme", saved);
+            return;
+          }
+          if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            document.documentElement.setAttribute("data-theme", "dark");
+          }
+        } catch (error) {
+          /* no-op */
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body data-page="applications">
+    <main class="shell">
+      <header class="hero card apps-hero">
+        <div class="hero-top">
+          <div>
+            <p class="eyebrow">Application Management</p>
+            <h1>Applications</h1>
+          </div>
+          <div class="apps-hero-actions">
+            <a class="page-link" href="/">Back Home</a>
+            <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle dark mode" aria-pressed="false">
+              Dark
+            </button>
+          </div>
+        </div>
+        <p class="hero-copy">Search, filter, sort, and update your entire internship and grad-role pipeline.</p>
+      </header>
+
+      <section class="card table-card apps-table-card">
+        <div class="apps-toolbar">
+          <label class="apps-search">
+            Search
+            <input id="appsSearch" placeholder="Company, role, location, notes..." />
+          </label>
+          <label>
+            Status
+            <select id="appsFilterStatus"></select>
+          </label>
+          <label>
+            Sort By
+            <select id="appsSort">
+              <option value="updated_desc">Recently Updated</option>
+              <option value="deadline_asc">Nearest Deadline</option>
+              <option value="company_asc">Company (A-Z)</option>
+              <option value="status_asc">Status (A-Z)</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="apps-stats" id="appsStats">
+          <article class="metric">
+            <p>Total</p>
+            <strong id="appsTotalCount">0</strong>
+            <span>All tracked roles</span>
+          </article>
+          <article class="metric">
+            <p>Active</p>
+            <strong id="appsActiveCount">0</strong>
+            <span>Not rejected or ghosted</span>
+          </article>
+          <article class="metric">
+            <p>Urgent</p>
+            <strong id="appsUrgentCount">0</strong>
+            <span>Deadlines in next 7 days</span>
+          </article>
+          <article class="metric">
+            <p>Showing</p>
+            <strong id="appsShowingCount">0</strong>
+            <span id="appsUpdatedAt">Updated now</span>
+          </article>
+        </div>
+
+        <div class="status-legend">
+          <span class="status-key status-wishlist">Wishlist</span>
+          <span class="status-key status-applied">Applied</span>
+          <span class="status-key status-oa">OA</span>
+          <span class="status-key status-interview">Interview</span>
+          <span class="status-key status-accepted">Assessment Centre</span>
+          <span class="status-key status-offer">Offer</span>
+          <span class="status-key status-rejected">Rejected</span>
+          <span class="status-key status-ghosted">Ghosted</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Role</th>
+                <th>Location</th>
+                <th class="table-deadline">Deadline</th>
+                <th>Status</th>
+                <th>Source</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="appsTbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+    <script src="/applications.js" defer></script>
+  </body>
+</html>
