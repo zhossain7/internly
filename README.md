@@ -1,3 +1,6 @@
+![Internly Dashboard](assets/dashboard.png)
+
+
 # Internly
 
 Internly is a local internship and graduate-role tracker with:
