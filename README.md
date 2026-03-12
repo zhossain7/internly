@@ -3,8 +3,8 @@
 Internly is a local internship and graduate-role tracker with:
 
 - Application tracking (company, role, deadline, status, notes).
-- Link extraction from job post URLs.
-- Screenshot extraction via OCR (using `tesseract` if installed).
+- Link extraction from job URLs (HTML/PDF/image auto-detected).
+- File extraction from PDFs, screenshots, and images.
 - A browser UI now, with an API-first design for future mobile apps.
 
 ## Quick Start
@@ -20,12 +20,15 @@ python app.py
 
 The SQLite database (`internly.db`) is created automatically in the project root.
 
-## OCR Setup (Optional)
+## Extraction Tooling (Optional but Recommended)
 
-Screenshot extraction requires `tesseract` available in your `PATH`.
+For high-quality extraction from mixed file types:
 
-- Windows: install Tesseract OCR, then restart terminal.
-- If unavailable, use manual entry or link extraction.
+- `tesseract` for image OCR
+- `pdftotext` for text-based PDFs
+- `pdftoppm` + `tesseract` for scanned PDFs (OCR fallback)
+
+If tools are unavailable, you can still use manual entry and text extraction.
 
 ## API Endpoints
 
@@ -35,7 +38,8 @@ Screenshot extraction requires `tesseract` available in your `PATH`.
 - `GET /api/applications/:id`
 - `PATCH /api/applications/:id`
 - `DELETE /api/applications/:id`
-- `POST /api/extract/link` with `{ "url": "https://..." }`
+- `POST /api/extract/link` with `{ "url": "https://..." }` (auto-detect HTML/PDF/image)
+- `POST /api/extract/file` with `{ "file_base64": "data:...;base64,...", "filename": "job.pdf", "mime_type": "application/pdf" }`
 - `POST /api/extract/screenshot` with `{ "image_base64": "data:image/png;base64,...", "filename": "job.png" }`
 - `POST /api/extract/text` with `{ "text": "..." }`
 
@@ -49,5 +53,5 @@ The backend API is already separated from the frontend, so you can build a phone
 
 ## Notes
 
-- Link/screenshot extraction is heuristic-based and should be reviewed before saving.
+- Link/file extraction is heuristic-based and should be reviewed before saving.
 - Dates are normalized to `YYYY-MM-DD` where possible.

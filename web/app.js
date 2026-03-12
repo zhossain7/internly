@@ -16,15 +16,47 @@ const statusSelect = document.getElementById("status");
 const filterStatus = document.getElementById("filterStatus");
 const tbody = document.getElementById("applicationsTbody");
 const toast = document.getElementById("toast");
+const themeToggle = document.getElementById("themeToggle");
+const THEME_KEY = "internly-theme";
 
 function showToast(message, isError = false) {
   toast.textContent = message;
   toast.classList.remove("hidden");
-  toast.style.background = isError ? "#7f1d1d" : "#0f172a";
+  toast.style.background = isError ? "#7f1d1d" : "var(--toast-bg)";
   window.clearTimeout(showToast.timeoutId);
   showToast.timeoutId = window.setTimeout(() => {
     toast.classList.add("hidden");
   }, 3400);
+}
+
+function resolveInitialTheme() {
+  const savedTheme = window.localStorage.getItem(THEME_KEY);
+  if (savedTheme === "light" || savedTheme === "dark") return savedTheme;
+  const prefersDark =
+    window.matchMedia &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches;
+  return prefersDark ? "dark" : "light";
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  if (!themeToggle) return;
+  const isDark = theme === "dark";
+  themeToggle.textContent = isDark ? "Light" : "Dark";
+  themeToggle.setAttribute("aria-pressed", isDark ? "true" : "false");
+}
+
+function initThemeToggle() {
+  if (!themeToggle) return;
+  const initialTheme = resolveInitialTheme();
+  applyTheme(initialTheme);
+
+  themeToggle.addEventListener("click", () => {
+    const currentTheme = document.documentElement.getAttribute("data-theme");
+    const nextTheme = currentTheme === "dark" ? "light" : "dark";
+    applyTheme(nextTheme);
+    window.localStorage.setItem(THEME_KEY, nextTheme);
+  });
 }
 
 function populateStatusOptions() {
@@ -178,7 +210,7 @@ function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("Failed to read screenshot file."));
+    reader.onerror = () => reject(new Error("Failed to read uploaded file."));
     reader.readAsDataURL(file);
   });
 }
@@ -188,23 +220,27 @@ screenshotForm.addEventListener("submit", async (event) => {
   const fileInput = document.getElementById("screenshotFile");
   const file = fileInput.files[0];
   if (!file) {
-    showToast("Please choose a screenshot file.", true);
+    showToast("Please choose a file.", true);
     return;
   }
 
-  if (file.size > 10 * 1024 * 1024) {
-    showToast("Screenshot is too large. Keep it below 10 MB.", true);
+  if (file.size > 20 * 1024 * 1024) {
+    showToast("File is too large. Keep it below 20 MB.", true);
     return;
   }
 
   try {
-    const imageBase64 = await fileToDataUrl(file);
-    const data = await api("/api/extract/screenshot", {
+    const fileBase64 = await fileToDataUrl(file);
+    const data = await api("/api/extract/file", {
       method: "POST",
-      body: JSON.stringify({ image_base64: imageBase64, filename: file.name }),
+      body: JSON.stringify({
+        file_base64: fileBase64,
+        filename: file.name,
+        mime_type: file.type || null,
+      }),
     });
     fillForm(data.extracted || {});
-    showToast("Fields extracted from screenshot. Review and save.");
+    showToast("Fields extracted from file. Review and save.");
   } catch (error) {
     showToast(error.message, true);
   }
@@ -245,6 +281,7 @@ tbody.addEventListener("click", async (event) => {
 });
 
 async function init() {
+  initThemeToggle();
   populateStatusOptions();
   try {
     await loadApplications();

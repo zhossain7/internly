@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -21,9 +23,11 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "internly.db"
 WEB_DIR = BASE_DIR / "web"
 
-MAX_BODY_BYTES = 12 * 1024 * 1024
+MAX_BODY_BYTES = 30 * 1024 * 1024
 MAX_HTML_BYTES = 1_200_000
-MAX_OCR_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_OCR_IMAGE_BYTES = 12 * 1024 * 1024
+MAX_PDF_OCR_PAGES = 5
 
 ALLOWED_STATUSES = {
     "wishlist",
@@ -133,6 +137,219 @@ def is_valid_url(url: str) -> bool:
     except Exception:
         return False
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".xml", ".log", ".yaml", ".yml"}
+HTML_EXTENSIONS = {".html", ".htm"}
+PDF_EXTENSIONS = {".pdf"}
+
+TEXT_MIME_HINTS = {
+    "text/plain",
+    "text/csv",
+    "application/json",
+    "application/xml",
+    "application/x-yaml",
+}
+HTML_MIME_HINTS = {"text/html", "application/xhtml+xml"}
+PDF_MIME_HINTS = {"application/pdf"}
+
+
+def extract_mime_type(value: str | None) -> str | None:
+    cleaned = clean_text(value, max_len=160)
+    if not cleaned:
+        return None
+    return cleaned.split(";", 1)[0].strip().lower() or None
+
+
+def parse_data_url(encoded: str) -> tuple[str | None, str]:
+    raw = encoded.strip()
+    if not raw.lower().startswith("data:") or "," not in raw:
+        return (None, raw)
+    header, data = raw.split(",", 1)
+    mime_hint = header[5:].split(";", 1)[0].strip().lower() or None
+    return (mime_hint, data.strip())
+
+
+def decode_base64_payload(encoded: str, *, max_size_bytes: int) -> tuple[bytes, str | None]:
+    mime_hint, data = parse_data_url(encoded)
+    if not data:
+        raise ValueError("file_base64 is empty.")
+    try:
+        file_bytes = base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise ValueError("file_base64 is not valid base64.") from error
+    if len(file_bytes) > max_size_bytes:
+        raise ValueError(f"File is too large. Limit is {max_size_bytes // (1024 * 1024)} MB.")
+    return (file_bytes, mime_hint)
+
+
+def detect_file_kind(
+    file_bytes: bytes,
+    *,
+    filename: str | None = None,
+    mime_type: str | None = None,
+    content_type: str | None = None,
+) -> str:
+    normalized_mime = extract_mime_type(mime_type) or extract_mime_type(content_type)
+    suffix = Path(filename or "").suffix.lower()
+
+    if file_bytes.startswith(b"%PDF-") or suffix in PDF_EXTENSIONS or normalized_mime in PDF_MIME_HINTS:
+        return "pdf"
+
+    if normalized_mime and normalized_mime.startswith("image/"):
+        return "image"
+    if suffix in IMAGE_EXTENSIONS:
+        return "image"
+    if file_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image"
+    if file_bytes[:3] == b"\xff\xd8\xff":
+        return "image"
+    if file_bytes[:6] in {b"GIF87a", b"GIF89a"}:
+        return "image"
+    if file_bytes[:4] == b"RIFF" and file_bytes[8:12] == b"WEBP":
+        return "image"
+    if file_bytes[:2] == b"BM":
+        return "image"
+
+    if normalized_mime in HTML_MIME_HINTS or suffix in HTML_EXTENSIONS:
+        return "html"
+    if normalized_mime in TEXT_MIME_HINTS or (normalized_mime and normalized_mime.startswith("text/")):
+        return "text"
+    if suffix in TEXT_EXTENSIONS:
+        return "text"
+
+    return "binary"
+
+
+def decode_text_bytes(file_bytes: bytes) -> str:
+    for encoding in ("utf-8", "utf-16", "utf-16-le", "utf-16-be", "latin-1"):
+        try:
+            return file_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return file_bytes.decode("utf-8", errors="ignore")
+
+
+def resolve_tesseract_command() -> str:
+    custom_path = os.environ.get("TESSERACT_PATH")
+    if custom_path:
+        candidate = Path(custom_path)
+        if candidate.exists():
+            return str(candidate)
+    return "tesseract"
+
+
+def run_tesseract_on_image_path(image_path: Path, *, timeout_seconds: int = 35) -> str:
+    command = [resolve_tesseract_command(), str(image_path), "stdout", "--psm", "6"]
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError("OCR unavailable: install 'tesseract' and add it to PATH.") from error
+    except subprocess.CalledProcessError as error:
+        message = error.stderr.strip() or "OCR failed."
+        raise RuntimeError(message) from error
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("OCR timed out. Try a smaller/cropped image.") from error
+
+    extracted_text = clean_text(result.stdout, max_len=22000) or ""
+    if not extracted_text:
+        raise RuntimeError("OCR produced no text. Try a clearer file.")
+    return extracted_text
+
+
+def extract_text_from_pdf_file(pdf_path: Path) -> tuple[str, list[str]]:
+    methods_used: list[str] = []
+    extracted_chunks: list[str] = []
+
+    if shutil.which("pdftotext"):
+        try:
+            result = subprocess.run(
+                ["pdftotext", "-layout", "-nopgbrk", str(pdf_path), "-"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+            text_output = clean_text(result.stdout, max_len=28000) or ""
+            if text_output:
+                extracted_chunks.append(text_output)
+                methods_used.append("pdftotext")
+        except subprocess.SubprocessError:
+            pass
+
+    combined_text = clean_text("\n".join(extracted_chunks), max_len=28000) or ""
+    if len(combined_text) >= 160:
+        return (combined_text, methods_used)
+
+    if not shutil.which("pdftoppm"):
+        if combined_text:
+            return (combined_text, methods_used)
+        raise RuntimeError(
+            "Unable to read PDF text. Install 'pdftotext' or 'pdftoppm' + 'tesseract'."
+        )
+
+    tesseract_cmd = resolve_tesseract_command()
+    has_tesseract = Path(tesseract_cmd).exists() if tesseract_cmd != "tesseract" else bool(
+        shutil.which("tesseract")
+    )
+    if not has_tesseract:
+        if combined_text:
+            return (combined_text, methods_used)
+        raise RuntimeError(
+            "PDF OCR unavailable. Install both 'pdftoppm' and 'tesseract'."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="internly-pdf-ocr-") as tmp_dir:
+        prefix_path = Path(tmp_dir) / "page"
+        try:
+            subprocess.run(
+                [
+                    "pdftoppm",
+                    "-f",
+                    "1",
+                    "-l",
+                    str(MAX_PDF_OCR_PAGES),
+                    "-png",
+                    str(pdf_path),
+                    str(prefix_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.SubprocessError as error:
+            if combined_text:
+                return (combined_text, methods_used)
+            raise RuntimeError("Failed to rasterize PDF for OCR.") from error
+
+        image_paths = sorted(Path(tmp_dir).glob("page-*.png"))
+        if not image_paths:
+            if combined_text:
+                return (combined_text, methods_used)
+            raise RuntimeError("No pages rendered for PDF OCR.")
+
+        ocr_chunks: list[str] = []
+        for image_path in image_paths:
+            try:
+                ocr_chunks.append(run_tesseract_on_image_path(image_path, timeout_seconds=45))
+            except RuntimeError:
+                continue
+
+    ocr_text = clean_text("\n".join(ocr_chunks), max_len=28000) or ""
+    if not ocr_text and not combined_text:
+        raise RuntimeError("Could not extract readable text from PDF.")
+    if ocr_text:
+        methods_used.append("pdf-ocr")
+    merged = clean_text("\n".join([combined_text, ocr_text]), max_len=28000) or ""
+    return (merged, methods_used)
 
 
 def init_db() -> None:
@@ -427,24 +644,33 @@ def extract_from_job_text(text: str, *, source_url: str | None = None) -> dict[s
     }
 
 
-def fetch_and_extract_from_link(url: str) -> dict[str, Any]:
-    request = Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (InternlyBot/1.0)",
-            "Accept": "text/html,application/xhtml+xml",
-        },
-    )
+def extension_from_mime(mime_type: str | None) -> str:
+    if not mime_type:
+        return ""
+    normalized = extract_mime_type(mime_type)
+    if normalized == "application/pdf":
+        return ".pdf"
+    if normalized == "image/png":
+        return ".png"
+    if normalized in {"image/jpeg", "image/jpg"}:
+        return ".jpg"
+    if normalized == "image/webp":
+        return ".webp"
+    if normalized == "image/gif":
+        return ".gif"
+    if normalized == "text/html":
+        return ".html"
+    if normalized and normalized.startswith("text/"):
+        return ".txt"
+    return ""
 
-    with urlopen(request, timeout=12) as response:
-        content_type = response.headers.get("Content-Type", "")
-        body = response.read(MAX_HTML_BYTES)
 
-    try:
-        html = body.decode("utf-8")
-    except UnicodeDecodeError:
-        html = body.decode("latin-1", errors="ignore")
-
+def extract_from_html_document(
+    html: str,
+    *,
+    source_url: str | None = None,
+    content_type: str | None = None,
+) -> dict[str, Any]:
     parser = JobPageParser()
     parser.feed(html)
 
@@ -459,12 +685,10 @@ def fetch_and_extract_from_link(url: str) -> dict[str, Any]:
 
     stripped_html = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html)
     plain_text = normalize_space(re.sub(r"(?s)<[^>]+>", " ", stripped_html))
-    plain_text = plain_text[:6000]
+    plain_text = plain_text[:12000]
 
-    seed_text = "\n".join(
-        part for part in [page_title, meta_description, plain_text] if part
-    )
-    extracted = extract_from_job_text(seed_text, source_url=url)
+    seed_text = "\n".join(part for part in [page_title, meta_description, plain_text] if part)
+    extracted = extract_from_job_text(seed_text, source_url=source_url)
 
     ld_json_extracted = extract_job_posting_from_ld_json(parser.ld_json_blobs)
     for key, value in ld_json_extracted.items():
@@ -481,64 +705,157 @@ def fetch_and_extract_from_link(url: str) -> dict[str, Any]:
 
     extracted["raw"] = {
         "content_type": content_type,
+        "source_type": "html",
         "title": page_title,
         "meta_description": meta_description,
     }
-
     return extracted
+
+
+def extract_from_file_bytes(
+    file_bytes: bytes,
+    *,
+    filename: str | None = None,
+    mime_type: str | None = None,
+    source_url: str | None = None,
+    content_type: str | None = None,
+) -> dict[str, Any]:
+    file_kind = detect_file_kind(
+        file_bytes,
+        filename=filename,
+        mime_type=mime_type,
+        content_type=content_type,
+    )
+    normalized_mime = extract_mime_type(mime_type) or extract_mime_type(content_type)
+
+    if file_kind == "html":
+        html = decode_text_bytes(file_bytes)
+        return extract_from_html_document(html, source_url=source_url, content_type=normalized_mime)
+
+    if file_kind == "text":
+        raw_text = decode_text_bytes(file_bytes)
+        extracted = extract_from_job_text(raw_text, source_url=source_url)
+        extracted["raw"] = {
+            "source_type": "text",
+            "content_type": normalized_mime,
+            "text_preview": clean_text(raw_text, max_len=900) or "",
+        }
+        return extracted
+
+    if file_kind == "image":
+        if len(file_bytes) > MAX_OCR_IMAGE_BYTES:
+            raise ValueError(
+                f"Image is too large. Keep it below {MAX_OCR_IMAGE_BYTES // (1024 * 1024)} MB."
+            )
+        suffix = Path(filename or "").suffix.lower()
+        if suffix not in IMAGE_EXTENSIONS:
+            suffix = extension_from_mime(normalized_mime) or ".png"
+
+        with tempfile.TemporaryDirectory(prefix="internly-image-ocr-") as temp_dir:
+            image_path = Path(temp_dir) / f"upload{suffix}"
+            image_path.write_bytes(file_bytes)
+            extracted_text = run_tesseract_on_image_path(image_path)
+
+        extracted = extract_from_job_text(extracted_text, source_url=source_url)
+        extracted["raw"] = {
+            "source_type": "image",
+            "content_type": normalized_mime,
+            "ocr_text_preview": extracted_text[:900],
+        }
+        return extracted
+
+    if file_kind == "pdf":
+        with tempfile.TemporaryDirectory(prefix="internly-pdf-") as temp_dir:
+            pdf_name = filename or "document.pdf"
+            if not pdf_name.lower().endswith(".pdf"):
+                pdf_name = f"{pdf_name}.pdf"
+            pdf_path = Path(temp_dir) / Path(pdf_name).name
+            pdf_path.write_bytes(file_bytes)
+            extracted_text, methods_used = extract_text_from_pdf_file(pdf_path)
+
+        extracted = extract_from_job_text(extracted_text, source_url=source_url)
+        extracted["raw"] = {
+            "source_type": "pdf",
+            "content_type": normalized_mime or "application/pdf",
+            "methods": methods_used,
+            "text_preview": extracted_text[:900],
+        }
+        return extracted
+
+    fallback_text = decode_text_bytes(file_bytes)
+    if len(normalize_space(fallback_text)) < 30:
+        raise RuntimeError(
+            "Unsupported file format. Use PDF, image, text, or a URL to the job posting."
+        )
+    extracted = extract_from_job_text(fallback_text, source_url=source_url)
+    extracted["raw"] = {
+        "source_type": "binary-fallback",
+        "content_type": normalized_mime,
+        "text_preview": clean_text(fallback_text, max_len=900) or "",
+    }
+    return extracted
+
+
+def extract_from_file_b64(
+    file_b64: str,
+    *,
+    filename: str | None = None,
+    mime_type: str | None = None,
+    source_url: str | None = None,
+    require_image: bool = False,
+) -> dict[str, Any]:
+    file_bytes, data_url_mime = decode_base64_payload(file_b64, max_size_bytes=MAX_UPLOAD_BYTES)
+    merged_mime = extract_mime_type(mime_type) or data_url_mime
+
+    if require_image:
+        file_kind = detect_file_kind(file_bytes, filename=filename, mime_type=merged_mime)
+        if file_kind != "image":
+            raise ValueError("image_base64 must contain an image file.")
+
+    return extract_from_file_bytes(
+        file_bytes,
+        filename=filename,
+        mime_type=merged_mime,
+        source_url=source_url,
+    )
+
+
+def fetch_and_extract_from_link(url: str) -> dict[str, Any]:
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (InternlyBot/1.0)",
+            "Accept": "text/html,application/xhtml+xml,application/pdf,image/*,*/*;q=0.7",
+        },
+    )
+
+    with urlopen(request, timeout=16) as response:
+        content_type = response.headers.get("Content-Type", "")
+        declared_mime = extract_mime_type(content_type)
+        max_read_bytes = MAX_HTML_BYTES if declared_mime in HTML_MIME_HINTS else MAX_UPLOAD_BYTES
+        body = response.read(max_read_bytes + 1)
+
+    if len(body) > max_read_bytes:
+        raise ValueError(
+            f"Linked file is too large. Limit is {max_read_bytes // (1024 * 1024)} MB for this type."
+        )
+
+    inferred_filename = Path(urlparse(url).path).name or None
+    return extract_from_file_bytes(
+        body,
+        filename=inferred_filename,
+        mime_type=declared_mime,
+        source_url=url,
+        content_type=content_type,
+    )
 
 
 def extract_from_screenshot_b64(image_b64: str, filename: str | None = None) -> dict[str, Any]:
-    raw_data = image_b64
-    if "," in raw_data and raw_data.strip().lower().startswith("data:"):
-        raw_data = raw_data.split(",", 1)[1]
-    raw_data = raw_data.strip()
-    if not raw_data:
-        raise ValueError("image_base64 is empty.")
-
     try:
-        image_bytes = base64.b64decode(raw_data, validate=True)
-    except (ValueError, binascii.Error) as error:
-        raise ValueError("image_base64 is not valid base64.") from error
-
-    if len(image_bytes) > MAX_OCR_IMAGE_BYTES:
-        raise ValueError("Screenshot is too large. Keep it below 10 MB.")
-
-    extension = ".png"
-    if filename:
-        suffix = Path(filename).suffix.lower()
-        if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
-            extension = suffix
-
-    with tempfile.TemporaryDirectory(prefix="internly-ocr-") as temp_dir:
-        image_path = Path(temp_dir) / f"upload{extension}"
-        image_path.write_bytes(image_bytes)
-
-        try:
-            result = subprocess.run(
-                ["tesseract", str(image_path), "stdout", "--psm", "6"],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except FileNotFoundError as error:
-            raise RuntimeError(
-                "OCR unavailable: install 'tesseract' and add it to PATH."
-            ) from error
-        except subprocess.CalledProcessError as error:
-            message = error.stderr.strip() or "OCR failed."
-            raise RuntimeError(message) from error
-        except subprocess.TimeoutExpired as error:
-            raise RuntimeError("OCR timed out. Try a smaller/cropped screenshot.") from error
-
-    extracted_text = clean_text(result.stdout, max_len=9000) or ""
-    if not extracted_text:
-        raise RuntimeError("OCR produced no text. Try a clearer screenshot.")
-
-    extracted = extract_from_job_text(extracted_text)
-    extracted["raw"] = {"ocr_text_preview": extracted_text[:900]}
-    return extracted
+        return extract_from_file_b64(image_b64, filename=filename, require_image=True)
+    except ValueError as error:
+        message = str(error).replace("file_base64", "image_base64")
+        raise ValueError(message) from error
 
 
 class InternlyHandler(BaseHTTPRequestHandler):
@@ -671,6 +988,12 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 return
             try:
                 extracted = fetch_and_extract_from_link(url)
+            except ValueError as error:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": str(error)},
+                )
+                return
             except Exception as error:
                 self._send_json(
                     HTTPStatus.BAD_GATEWAY,
@@ -680,13 +1003,55 @@ class InternlyHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"ok": True, "extracted": extracted})
             return
 
+        if path == "/api/extract/file":
+            file_base64 = payload.get("file_base64")
+            filename = clean_text(payload.get("filename"), max_len=200)
+            mime_type = clean_text(payload.get("mime_type"), max_len=160)
+            source_url = clean_text(payload.get("source_url"), max_len=800)
+            if source_url and not is_valid_url(source_url):
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "`source_url` must be a valid http(s) URL."},
+                )
+                return
+            if not isinstance(file_base64, str) or not file_base64.strip():
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "Provide `file_base64` in the request body."},
+                )
+                return
+            if len(file_base64) > 28_000_000:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "file_base64 payload is too large."},
+                )
+                return
+            try:
+                extracted = extract_from_file_b64(
+                    file_base64,
+                    filename=filename,
+                    mime_type=mime_type,
+                    source_url=source_url,
+                )
+            except (ValueError, RuntimeError) as error:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
+                return
+            self._send_json(HTTPStatus.OK, {"ok": True, "extracted": extracted})
+            return
+
         if path == "/api/extract/screenshot":
-            image_b64 = clean_text(payload.get("image_base64"), max_len=14_000_000)
+            image_b64 = payload.get("image_base64")
             filename = clean_text(payload.get("filename"), max_len=120)
-            if not image_b64:
+            if not isinstance(image_b64, str) or not image_b64.strip():
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
                     {"ok": False, "error": "Provide `image_base64` in the request body."},
+                )
+                return
+            if len(image_b64) > 18_000_000:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "image_base64 payload is too large."},
                 )
                 return
             try:
