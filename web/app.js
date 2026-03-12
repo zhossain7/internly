@@ -579,17 +579,18 @@ function renderMomentumPanel(items) {
 function renderRows(applications) {
   if (!tbody) return;
 
-  const previewItems = IS_HOME_PAGE ? applications.slice(0, 5) : applications;
-  if (IS_HOME_PAGE && previewMeta) {
+  const hasPreviewTable = Boolean(previewMeta);
+  const previewItems = hasPreviewTable ? applications.slice(0, 5) : applications;
+  if (previewMeta) {
     previewMeta.textContent = `Showing ${previewItems.length} of ${applications.length}`;
   }
   if (!previewItems.length) {
-    const colspan = IS_HOME_PAGE ? 5 : 7;
+    const colspan = hasPreviewTable ? 5 : 7;
     tbody.innerHTML = `<tr><td colspan="${colspan}">No applications yet.</td></tr>`;
     return;
   }
 
-  if (IS_HOME_PAGE) {
+  if (hasPreviewTable) {
     tbody.innerHTML = previewItems
       .map(
         (item) => `
@@ -856,6 +857,9 @@ async function init() {
     if (!sessionState.authenticated) {
       window.location.href = "/login";
       return;
+    }
+    if (previewMeta) {
+      previewMeta.textContent = "Unable to load applications.";
     }
     showToast(error.message, true);
   }
