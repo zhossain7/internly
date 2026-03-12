@@ -35,7 +35,7 @@ ALLOWED_STATUSES = {
     "oa",
     "interview",
     "offer",
-    "accepted",
+    "assessment_centre",
     "rejected",
     "ghosted",
 }
@@ -77,7 +77,12 @@ def ensure_status(value: Any) -> str:
     status = clean_text(value, max_len=32)
     if not status:
         return "wishlist"
-    lowered = status.lower()
+    lowered = status.lower().replace("-", "_").replace(" ", "_")
+    status_aliases = {
+        "ac": "assessment_centre",
+        "assessmentcentre": "assessment_centre",
+    }
+    lowered = status_aliases.get(lowered, lowered)
     if lowered not in ALLOWED_STATUSES:
         raise ValueError(
             f"Invalid status '{status}'. Use one of: {', '.join(sorted(ALLOWED_STATUSES))}."
@@ -379,6 +384,10 @@ def init_db() -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_applications_updated_at ON applications(updated_at DESC);"
+        )
+        # One-time status correction from earlier naming.
+        conn.execute(
+            "UPDATE applications SET status = 'assessment_centre' WHERE status = 'accepted';"
         )
         conn.commit()
     finally:

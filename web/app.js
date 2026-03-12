@@ -4,7 +4,7 @@ const STATUSES = [
   "oa",
   "interview",
   "offer",
-  "accepted",
+  "assessment_centre",
   "rejected",
   "ghosted",
 ];
@@ -28,6 +28,10 @@ function showToast(message, isError = false) {
   showToast.timeoutId = window.setTimeout(() => {
     toast.classList.add("hidden");
   }, 3400);
+}
+
+function formatStatusLabel(status) {
+  return status.replaceAll("_", " ");
 }
 
 function resolveInitialTheme() {
@@ -62,7 +66,7 @@ function initThemeToggle() {
 
 function populateStatusOptions() {
   const statusOptions = STATUSES.map(
-    (status) => `<option value="${status}">${status}</option>`
+    (status) => `<option value="${status}">${formatStatusLabel(status)}</option>`
   ).join("");
   statusSelect.innerHTML = statusOptions;
   filterStatus.innerHTML = `<option value="">all</option>${statusOptions}`;
@@ -114,7 +118,7 @@ function statusCell(application) {
         (status) =>
           `<option value="${status}" ${
             status === application.status ? "selected" : ""
-          }>${status}</option>`
+          }>${formatStatusLabel(status)}</option>`
       ).join("")}
     </select>
   `;
