@@ -971,6 +971,14 @@ class InternlyHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"ok": True, "item": item})
             return
 
+        if path in {"/app", "/app/"}:
+            self._serve_static("/app.html")
+            return
+
+        if path in {"/applications", "/applications/"}:
+            self._serve_static("/applications.html")
+            return
+
         self._serve_static(path)
 
     def do_POST(self) -> None:  # noqa: N802

@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Internly App</title>
+    <script>
+      (function () {
+        try {
+          var key = "internly-theme";
+          var saved = window.localStorage.getItem(key);
+          if (saved === "dark" || saved === "light") {
+            document.documentElement.setAttribute("data-theme", saved);
+            return;
+          }
+          if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            document.documentElement.setAttribute("data-theme", "dark");
+          }
+        } catch (error) {
+          /* no-op */
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body data-page="home">
+    <main class="shell">
+      <nav id="topNav" class="top-nav card">
+        <a class="brand-lockup" href="#home">
+          <strong>Internly</strong>
+          <span>internships + grad roles</span>
+        </a>
+        <button id="navMenuToggle" class="nav-menu-toggle secondary" type="button" aria-label="Toggle navigation">
+          Menu
+        </button>
+        <div id="navLinks" class="nav-links">
+          <a class="nav-link" href="/">Product</a>
+          <a class="nav-link is-active" href="#home">Home</a>
+          <a class="nav-link" href="#capabilities">Capabilities</a>
+          <a class="nav-link" href="#capture">Capture</a>
+          <a class="nav-link" href="#applications-preview">Preview</a>
+          <a class="nav-link nav-link-solid" href="/applications.html">Applications</a>
+        </div>
+        <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle dark mode" aria-pressed="false">
+          Dark
+        </button>
+      </nav>
+
+      <header id="home" class="hero card">
+        <div class="hero-top">
+          <div>
+            <p class="eyebrow">Internship and Graduate Roles</p>
+            <h1>Internly</h1>
+          </div>
+        </div>
+        <p class="hero-copy">
+          Minimal pipeline for saving opportunities, extracting details from links, PDFs, and images, and tracking
+          every application stage.
+        </p>
+        <div class="hero-chips">
+          <span class="chip">Local-first</span>
+          <span class="chip">Smart URL Extraction</span>
+          <span class="chip">PDF + Image OCR</span>
+        </div>
+      </header>
+
+      <section id="capabilities" class="card capability-card">
+        <div class="section-head capability-head">
+          <h2>Capability Console</h2>
+          <p id="capabilityTicker" class="capability-ticker">
+            Capture from links, screenshots, and PDFs in one flow.
+          </p>
+        </div>
+        <div class="capability-grid">
+          <article class="capability-tile" data-reveal>
+            <h3>Smart Ingestion</h3>
+            <ul class="capability-list">
+              <li>URL extraction for HTML, PDF, and image links</li>
+              <li>Manual quick-add for edge cases</li>
+              <li>Field-level review before save</li>
+            </ul>
+          </article>
+          <article class="capability-tile" data-reveal>
+            <h3>OCR Pipeline</h3>
+            <ul class="capability-list">
+              <li>Scanned PDFs via OCR fallback</li>
+              <li>Screenshots and images supported</li>
+              <li>Deadline + company + role heuristics</li>
+            </ul>
+          </article>
+          <article class="capability-tile" data-reveal>
+            <h3>Live Status Mix</h3>
+            <div id="statusSnapshot" class="status-snapshot">
+              <p class="snapshot-empty">No applications yet.</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="card pulse-card">
+        <div class="pulse-head">
+          <div class="section-head">
+            <h2>Momentum</h2>
+            <p>Live signals from your application pipeline.</p>
+          </div>
+          <p id="pulseUpdated" class="pulse-updated">Updated now</p>
+        </div>
+
+        <div class="pulse-grid">
+          <article class="metric">
+            <p>Total Roles</p>
+            <strong id="metricTotal">0</strong>
+            <span>Tracked applications</span>
+          </article>
+          <article class="metric">
+            <p>Active Pipeline</p>
+            <strong id="metricActive">0</strong>
+            <span>Not rejected or ghosted</span>
+          </article>
+          <article class="metric">
+            <p>Interview Track</p>
+            <strong id="metricInterviewTrack">0</strong>
+            <span>OA, interviews, AC, offers</span>
+          </article>
+          <article class="metric">
+            <p>Momentum Score</p>
+            <strong id="metricScore">0%</strong>
+            <span id="metricScoreHint">Pipeline velocity indicator</span>
+          </article>
+        </div>
+
+        <div class="pulse-lower">
+          <article class="next-move">
+            <h3>Next Move</h3>
+            <p id="nextMoveText">Add your first target role to activate guidance.</p>
+          </article>
+
+          <article class="radar">
+            <h3>Deadline Radar</h3>
+            <ul id="deadlineRadar" class="radar-list">
+              <li>No upcoming deadlines yet.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="capture" class="workspace">
+        <section class="card card-main">
+          <div class="section-head">
+            <h2>Quick Add</h2>
+            <p>Capture roles manually or after extraction.</p>
+          </div>
+          <form id="applicationForm" class="grid-form">
+            <label>
+              Company *
+              <input id="company" name="company" required />
+            </label>
+            <label>
+              Role *
+              <input id="role" name="role" required />
+            </label>
+            <label>
+              Location
+              <input id="location" name="location" />
+            </label>
+            <label>
+              Type
+              <input id="jobType" name="job_type" placeholder="Internship / Graduate" />
+            </label>
+            <label>
+              Deadline
+              <input id="deadline" name="deadline" type="date" />
+            </label>
+            <label>
+              Status
+              <select id="status" name="status"></select>
+            </label>
+            <label class="full-width">
+              Source URL
+              <input id="sourceUrl" name="source_url" placeholder="https://..." />
+            </label>
+            <label class="full-width">
+              Notes
+              <textarea id="notes" name="notes" rows="3"></textarea>
+            </label>
+            <div class="actions full-width">
+              <button type="submit">Save Application</button>
+              <button type="button" id="resetBtn" class="secondary">Clear</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="side-stack">
+          <section class="card">
+            <div class="section-head">
+              <h2>Import From Link</h2>
+            </div>
+            <form id="linkImportForm" class="stack-form">
+              <label>
+                Job URL (HTML, PDF, or Image)
+                <input id="linkUrl" placeholder="https://company.com/jobs/..." required />
+              </label>
+              <button type="submit">Extract Fields</button>
+            </form>
+            <p class="help-text">URL extraction auto-detects page, PDF, and image links.</p>
+          </section>
+
+          <section class="card">
+            <div class="section-head">
+              <h2>Import File</h2>
+            </div>
+            <form id="screenshotForm" class="stack-form">
+              <label>
+                Upload PDF or Image
+                <input id="screenshotFile" type="file" accept=".pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/tiff" required />
+              </label>
+              <button type="submit">Extract Fields</button>
+            </form>
+            <p class="help-text">
+              Works with PDF and images. Best results with <code>pdftotext</code>, <code>pdftoppm</code>, and
+              <code>tesseract</code> installed.
+            </p>
+          </section>
+        </aside>
+      </section>
+
+      <section id="applications-preview" class="card table-card">
+        <div class="table-head">
+          <div class="section-head">
+            <h2>Applications Preview</h2>
+            <p>Latest 5 roles. Open the full workspace for complete tracking.</p>
+            <p id="previewMeta" class="preview-meta">Loading...</p>
+          </div>
+          <a id="applicationsPageLink" class="page-link" href="/applications.html">Open Full Applications</a>
+        </div>
+        <div class="status-legend">
+          <span class="status-key status-wishlist">Wishlist</span>
+          <span class="status-key status-applied">Applied</span>
+          <span class="status-key status-oa">OA</span>
+          <span class="status-key status-interview">Interview</span>
+          <span class="status-key status-accepted">Assessment Centre</span>
+          <span class="status-key status-offer">Offer</span>
+          <span class="status-key status-rejected">Rejected</span>
+          <span class="status-key status-ghosted">Ghosted</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Role</th>
+                <th class="table-deadline">Deadline</th>
+                <th>Status</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody id="applicationsTbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

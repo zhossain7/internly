@@ -19,7 +19,8 @@ python app.py
 3. Open: `http://127.0.0.1:8000`
 
 Main views:
-- Home dashboard: `/`
+- Product homepage: `/`
+- App dashboard: `/app`
 - Full applications workspace: `/applications.html`
 
 The SQLite database (`internly.db`) is created automatically in the project root.
