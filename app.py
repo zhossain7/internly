@@ -35,6 +35,7 @@ ALLOWED_STATUSES = {
     "oa",
     "interview",
     "offer",
+    "accepted",
     "rejected",
     "ghosted",
 }

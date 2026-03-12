@@ -4,6 +4,7 @@ const STATUSES = [
   "oa",
   "interview",
   "offer",
+  "accepted",
   "rejected",
   "ghosted",
 ];
