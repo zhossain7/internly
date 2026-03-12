@@ -1,4 +1,4 @@
-![Internly Dashboard](dashboard.png)
+
 
 
 # Internly
