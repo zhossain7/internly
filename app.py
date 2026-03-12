@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import zipfile
 from datetime import datetime
 from html.parser import HTMLParser
 from http import HTTPStatus
@@ -62,6 +64,34 @@ APPLICATION_COLUMNS = (
     "created_at",
     "updated_at",
 )
+
+EXCEL_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("id", "Application #"),
+    ("company", "Company"),
+    ("role", "Role"),
+    ("location", "Location"),
+    ("job_type", "Type"),
+    ("deadline", "Deadline (YYYY-MM-DD)"),
+    ("status", "Status"),
+    ("source_url", "Source URL"),
+    ("compensation", "Compensation"),
+    ("notes", "Notes"),
+    ("created_at", "Created At (UTC)"),
+    ("updated_at", "Updated At (UTC)"),
+)
+
+EXCEL_STATUS_ORDER = (
+    "wishlist",
+    "applied",
+    "oa",
+    "interview",
+    "accepted",
+    "offer",
+    "rejected",
+    "ghosted",
+)
+
+EXCEL_COLUMN_WIDTHS = (9, 24, 30, 18, 16, 20, 16, 46, 18, 58, 24, 24)
 
 SESSION_STORE: dict[str, dict[str, Any]] = {}
 SESSION_STORE_LOCK = threading.Lock()
@@ -458,6 +488,228 @@ def open_db() -> sqlite3.Connection:
 
 def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {key: row[key] for key in APPLICATION_COLUMNS}
+
+
+def excel_col_name(index: int) -> str:
+    value = max(1, index)
+    parts: list[str] = []
+    while value > 0:
+        value, remainder = divmod(value - 1, 26)
+        parts.append(chr(65 + remainder))
+    return "".join(reversed(parts))
+
+
+def escape_xml_text(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def sanitize_excel_cell_value(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    if text and text[0] in {"=", "+", "-", "@"}:
+        # Prevent formula injection when opening exported files in spreadsheet tools.
+        text = "'" + text
+    return text
+
+
+def build_excel_cell(ref: str, value: Any, *, style_id: int = 0) -> str:
+    text = sanitize_excel_cell_value(value)
+    if not text:
+        return f'<c r="{ref}" s="{style_id}"/>'
+    escaped = escape_xml_text(text)
+    return (
+        f'<c r="{ref}" t="inlineStr" s="{style_id}">'
+        f'<is><t xml:space="preserve">{escaped}</t></is>'
+        f"</c>"
+    )
+
+
+def build_excel_sheet_xml(
+    rows: list[list[Any]],
+    *,
+    include_status_validation: bool,
+) -> str:
+    last_row = max(1, len(rows))
+    last_col = excel_col_name(len(EXCEL_EXPORT_COLUMNS))
+    dimension_ref = f"A1:{last_col}{last_row}"
+    status_col = excel_col_name(7)
+
+    cols_xml = "".join(
+        f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>'
+        for index, width in enumerate(EXCEL_COLUMN_WIDTHS, start=1)
+    )
+
+    row_xml_parts: list[str] = []
+    for row_number, values in enumerate(rows, start=1):
+        cells: list[str] = []
+        for col_number, value in enumerate(values, start=1):
+            ref = f"{excel_col_name(col_number)}{row_number}"
+            style_id = 1 if row_number == 1 else 0
+            if row_number > 1 and col_number == 10:
+                style_id = 2
+            cells.append(build_excel_cell(ref, value, style_id=style_id))
+        if row_number == 1:
+            row_xml_parts.append(
+                f'<row r="{row_number}" ht="22" customHeight="1">{"".join(cells)}</row>'
+            )
+        else:
+            row_xml_parts.append(f'<row r="{row_number}">{"".join(cells)}</row>')
+
+    data_validation_xml = ""
+    if include_status_validation:
+        allowed = ",".join(EXCEL_STATUS_ORDER)
+        data_validation_xml = (
+            '<dataValidations count="1">'
+            f'<dataValidation type="list" allowBlank="1" sqref="{status_col}2:{status_col}1048576">'
+            f'<formula1>"{allowed}"</formula1>'
+            "</dataValidation>"
+            "</dataValidations>"
+        )
+
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f"<dimension ref=\"{dimension_ref}\"/>"
+        "<sheetViews>"
+        '<sheetView workbookViewId="0">'
+        '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+        "</sheetView>"
+        "</sheetViews>"
+        '<sheetFormatPr defaultRowHeight="15"/>'
+        f"<cols>{cols_xml}</cols>"
+        f"<sheetData>{''.join(row_xml_parts)}</sheetData>"
+        f'<autoFilter ref="A1:{last_col}1"/>'
+        f"{data_validation_xml}"
+        "</worksheet>"
+    )
+
+
+def build_excel_workbook_bytes(
+    rows: list[list[Any]],
+    *,
+    include_status_validation: bool,
+) -> bytes:
+    content_types_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        "</Types>"
+    )
+    package_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="xl/workbook.xml"/>'
+        "</Relationships>"
+    )
+    workbook_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<sheets>"
+        '<sheet name="Applications" sheetId="1" r:id="rId1"/>'
+        "</sheets>"
+        "</workbook>"
+    )
+    workbook_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" '
+        'Target="styles.xml"/>'
+        "</Relationships>"
+    )
+    styles_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<fonts count="2">'
+        '<font><sz val="11"/><name val="Calibri"/><family val="2"/></font>'
+        '<font><b/><sz val="11"/><name val="Calibri"/><family val="2"/><color rgb="FFFFFFFF"/></font>'
+        "</fonts>"
+        '<fills count="3">'
+        '<fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FF111827"/><bgColor indexed="64"/></patternFill></fill>'
+        "</fills>"
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="3">'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1">'
+        '<alignment vertical="top" wrapText="1"/>'
+        "</xf>"
+        "</cellXfs>"
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+        "</styleSheet>"
+    )
+
+    sheet_xml = build_excel_sheet_xml(
+        rows, include_status_validation=include_status_validation
+    )
+
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types_xml)
+        archive.writestr("_rels/.rels", package_rels_xml)
+        archive.writestr("xl/workbook.xml", workbook_xml)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+        archive.writestr("xl/styles.xml", styles_xml)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+    return output.getvalue()
+
+
+def application_to_excel_row(item: dict[str, Any], *, export_index: int) -> list[Any]:
+    row: list[Any] = []
+    for key, _label in EXCEL_EXPORT_COLUMNS:
+        if key == "id":
+            value = export_index
+        else:
+            value = item.get(key)
+        if key == "status":
+            value = "accepted" if value == "assessment_centre" else value
+        row.append(value or "")
+    return row
+
+
+def build_template_excel_bytes() -> bytes:
+    header_row = [label for _key, label in EXCEL_EXPORT_COLUMNS]
+    example_row = [
+        "",
+        "Example Corp",
+        "Software Engineer Intern",
+        "Sydney",
+        "Internship",
+        "2026-08-31",
+        "wishlist",
+        "https://example.com/jobs/software-engineer-intern",
+        "$45/hour",
+        "Keep this format. You can add one application per row.",
+        "",
+        "",
+    ]
+    return build_excel_workbook_bytes(
+        [header_row, example_row], include_status_validation=True
+    )
+
+
+def build_export_excel_bytes(items: list[dict[str, Any]]) -> bytes:
+    rows = [[label for _key, label in EXCEL_EXPORT_COLUMNS]]
+    for index, item in enumerate(items, start=1):
+        rows.append(application_to_excel_row(item, export_index=index))
+    return build_excel_workbook_bytes(rows, include_status_validation=False)
 
 
 class JobPageParser(HTMLParser):
@@ -925,7 +1177,7 @@ def extract_from_screenshot_b64(image_b64: str, filename: str | None = None) -> 
 
 
 class InternlyHandler(BaseHTTPRequestHandler):
-    server_version = "InternlyHTTP/0.1"
+    server_version = "InternlyHTTP/0.2.0"
 
     def log_message(self, format: str, *args: Any) -> None:
         # Keep logging concise for local development.
@@ -1033,6 +1285,24 @@ class InternlyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _send_binary(
+        self,
+        status: int,
+        content: bytes,
+        content_type: str,
+        *,
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        if extra_headers:
+            for key, value in extra_headers:
+                self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(content)
+
     def _parse_json_body(self) -> dict[str, Any]:
         length_raw = self.headers.get("Content-Length")
         try:
@@ -1112,6 +1382,54 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 self._redirect("/app")
                 return
             self._serve_static("/login.html")
+            return
+
+        if path == "/api/applications/template.xlsx":
+            if not self._require_session():
+                self._send_json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"ok": False, "error": "Please log in or continue as guest."},
+                )
+                return
+            workbook = build_template_excel_bytes()
+            self._send_binary(
+                HTTPStatus.OK,
+                workbook,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                extra_headers=[
+                    (
+                        "Content-Disposition",
+                        'attachment; filename="internly-applications-template.xlsx"',
+                    )
+                ],
+            )
+            return
+
+        if path == "/api/applications/export.xlsx":
+            session, error = self._require_user_session()
+            if error:
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": error})
+                return
+            params = parse_qs(parsed.query)
+            status_filter = params.get("status", [None])[0]
+            try:
+                data = self._list_applications(session["user_id"], status_filter)
+            except ValueError as error:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
+                return
+            timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            workbook = build_export_excel_bytes(data)
+            self._send_binary(
+                HTTPStatus.OK,
+                workbook,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                extra_headers=[
+                    (
+                        "Content-Disposition",
+                        f'attachment; filename="internly-applications-{timestamp}.xlsx"',
+                    )
+                ],
+            )
             return
 
         if path == "/api/applications":

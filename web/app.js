@@ -63,9 +63,11 @@ function showToast(message, isError = false) {
 
 function formatStatusLabel(status) {
   if (status === "accepted" || status === "assessment_centre") {
-    return "assessment centre";
+    return "Assessment Centre";
   }
-  return status.replaceAll("_", " ");
+  return status
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function normalizeStatusForUI(status) {
@@ -109,10 +111,7 @@ function getUrgencyClass(days) {
 function resolveInitialTheme() {
   const savedTheme = window.localStorage.getItem(THEME_KEY);
   if (savedTheme === "light" || savedTheme === "dark") return savedTheme;
-  const prefersDark =
-    window.matchMedia &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches;
-  return prefersDark ? "dark" : "light";
+  return "dark";
 }
 
 function applyTheme(theme) {
@@ -155,6 +154,14 @@ function initThemeToggle() {
   }
 }
 
+function applyStatusSelectStyle(selectElement, status) {
+  if (!selectElement) return;
+  const normalized = normalizeStatusForUI(status || "wishlist");
+  selectElement.classList.add("table-status");
+  STATUSES.forEach((value) => selectElement.classList.remove(`status-${value}`));
+  selectElement.classList.add(`status-${normalized}`);
+}
+
 function populateStatusOptions() {
   const statusOptions = STATUSES.map(
     (status) => `<option value="${status}">${formatStatusLabel(status)}</option>`
@@ -162,6 +169,7 @@ function populateStatusOptions() {
   if (statusSelect) {
     statusSelect.innerHTML = statusOptions;
     statusSelect.value = "wishlist";
+    applyStatusSelectStyle(statusSelect, statusSelect.value);
   }
   if (filterStatus) {
     filterStatus.innerHTML = `<option value="">all</option>${statusOptions}`;
@@ -192,6 +200,7 @@ function fillForm(extracted) {
   document.getElementById("notes").value = extracted.notes || "";
   document.getElementById("status").value =
     normalizeStatusForUI(extracted.status) || "wishlist";
+  applyStatusSelectStyle(statusSelect, statusSelect.value);
 }
 
 async function api(path, options = {}) {
@@ -659,6 +668,7 @@ applicationForm.addEventListener("submit", async (event) => {
       saveGuestApplications(applicationsCache);
       applicationForm.reset();
       statusSelect.value = "wishlist";
+      applyStatusSelectStyle(statusSelect, statusSelect.value);
       renderRows(getFilteredApplications());
       renderMomentumPanel(applicationsCache);
       showToast("Saved in guest mode (temporary only).");
@@ -671,6 +681,7 @@ applicationForm.addEventListener("submit", async (event) => {
     });
     applicationForm.reset();
     statusSelect.value = "wishlist";
+    applyStatusSelectStyle(statusSelect, statusSelect.value);
     await loadApplications();
     showToast("Application saved.");
   } catch (error) {
@@ -681,6 +692,11 @@ applicationForm.addEventListener("submit", async (event) => {
 resetBtn.addEventListener("click", () => {
   applicationForm.reset();
   statusSelect.value = "wishlist";
+  applyStatusSelectStyle(statusSelect, statusSelect.value);
+});
+
+statusSelect?.addEventListener("change", () => {
+  applyStatusSelectStyle(statusSelect, statusSelect.value);
 });
 
 if (filterStatus) {
@@ -775,6 +791,15 @@ tbody.addEventListener("change", async (event) => {
       method: "PATCH",
       body: JSON.stringify({ status: target.value }),
     });
+    const nextStatus = normalizeStatusForUI(target.value);
+    applyStatusSelectStyle(target, nextStatus);
+    const index = applicationsCache.findIndex((item) => String(item.id) === id);
+    if (index >= 0) {
+      applicationsCache[index].status = nextStatus;
+      applicationsCache[index].updated_at = new Date().toISOString();
+    }
+    renderRows(getFilteredApplications());
+    renderMomentumPanel(applicationsCache);
     showToast("Status updated.");
   } catch (error) {
     showToast(error.message, true);

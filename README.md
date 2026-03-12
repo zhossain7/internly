@@ -45,6 +45,8 @@ If tools are unavailable, you can still use manual entry and text extraction.
 - `POST /api/auth/guest`
 - `POST /api/auth/logout`
 - `GET /api/applications`
+- `GET /api/applications/template.xlsx` (formatted Excel template with all fields)
+- `GET /api/applications/export.xlsx` (export your tracked applications to Excel)
 - `POST /api/applications`
 - `GET /api/applications/:id`
 - `PATCH /api/applications/:id`
@@ -66,5 +68,6 @@ The backend API is already separated from the frontend, so you can build a phone
 
 - Dashboard and applications routes require either logged-in or guest session.
 - Guest mode is temporary and does not save application data to the server database.
+- Excel export is available for signed-in users; guest mode can still download the blank template.
 - Link/file extraction is heuristic-based and should be reviewed before saving.
 - Dates are normalized to `YYYY-MM-DD` where possible.

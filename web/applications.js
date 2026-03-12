@@ -19,6 +19,8 @@ const appsActiveCount = document.getElementById("appsActiveCount");
 const appsUrgentCount = document.getElementById("appsUrgentCount");
 const appsShowingCount = document.getElementById("appsShowingCount");
 const appsUpdatedAt = document.getElementById("appsUpdatedAt");
+const downloadTemplateBtn = document.getElementById("downloadTemplateBtn");
+const exportExcelBtn = document.getElementById("exportExcelBtn");
 const themeToggle = document.getElementById("themeToggle");
 const themeSwitch = document.getElementById("themeSwitch");
 const themeSwitchLabel = document.getElementById("themeSwitchLabel");
@@ -56,9 +58,11 @@ function sanitize(value) {
 
 function formatStatusLabel(status) {
   if (status === "accepted" || status === "assessment_centre") {
-    return "assessment centre";
+    return "Assessment Centre";
   }
-  return status.replaceAll("_", " ");
+  return status
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function normalizeStatusForUI(status) {
@@ -67,6 +71,14 @@ function normalizeStatusForUI(status) {
 
 function statusClassName(status) {
   return `status-${normalizeStatusForUI(status)}`;
+}
+
+function applyStatusSelectStyle(selectElement, status) {
+  if (!selectElement) return;
+  const normalized = normalizeStatusForUI(status || "wishlist");
+  selectElement.classList.add("table-status");
+  STATUSES.forEach((value) => selectElement.classList.remove(`status-${value}`));
+  selectElement.classList.add(`status-${normalized}`);
 }
 
 function parseDeadline(deadline) {
@@ -150,6 +162,34 @@ async function getSession() {
   return data;
 }
 
+function filenameFromDisposition(dispositionValue, fallbackName) {
+  if (!dispositionValue) return fallbackName;
+  const match = dispositionValue.match(/filename="?([^";]+)"?/i);
+  return match ? match[1] : fallbackName;
+}
+
+async function downloadSpreadsheet(path, fallbackName) {
+  const response = await fetch(path);
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || `Download failed (${response.status})`);
+  }
+  const blob = await response.blob();
+  const filename = filenameFromDisposition(
+    response.headers.get("Content-Disposition"),
+    fallbackName
+  );
+
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(objectUrl);
+}
+
 function loadGuestApplications() {
   try {
     const raw = window.sessionStorage.getItem(GUEST_APPS_KEY);
@@ -203,10 +243,7 @@ async function logoutAndReturnHome() {
 function resolveInitialTheme() {
   const savedTheme = window.localStorage.getItem(THEME_KEY);
   if (savedTheme === "light" || savedTheme === "dark") return savedTheme;
-  const prefersDark =
-    window.matchMedia &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches;
-  return prefersDark ? "dark" : "light";
+  return "dark";
 }
 
 function applyTheme(theme) {
@@ -389,17 +426,59 @@ appsSearch.addEventListener("input", renderAll);
 appsFilterStatus.addEventListener("change", renderAll);
 appsSort.addEventListener("change", renderAll);
 
+if (downloadTemplateBtn) {
+  downloadTemplateBtn.addEventListener("click", async () => {
+    try {
+      await downloadSpreadsheet(
+        "/api/applications/template.xlsx",
+        "internly-applications-template.xlsx"
+      );
+      showToast("Excel template downloaded.");
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  });
+}
+
+if (exportExcelBtn) {
+  exportExcelBtn.addEventListener("click", async () => {
+    if (sessionState.is_guest) {
+      showToast("Guest mode data is local only. Sign in to export.", true);
+      return;
+    }
+
+    const params = new URLSearchParams();
+    const status = appsFilterStatus.value;
+    if (status) {
+      params.set("status", status);
+    }
+    const query = params.toString();
+    const path = query
+      ? `/api/applications/export.xlsx?${query}`
+      : "/api/applications/export.xlsx";
+
+    try {
+      await downloadSpreadsheet(path, "internly-applications.xlsx");
+      showToast("Excel export downloaded.");
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  });
+}
+
 appsTbody.addEventListener("change", async (event) => {
   const target = event.target;
   if (!(target instanceof HTMLSelectElement)) return;
   const id = target.dataset.statusId;
   if (!id) return;
+  const nextStatus = normalizeStatusForUI(target.value);
+  applyStatusSelectStyle(target, nextStatus);
 
   try {
     if (sessionState.is_guest) {
       const index = appsCache.findIndex((item) => String(item.id) === id);
       if (index >= 0) {
-        appsCache[index].status = normalizeStatusForUI(target.value);
+        appsCache[index].status = nextStatus;
         appsCache[index].updated_at = new Date().toISOString();
       }
       saveGuestApplications(appsCache);
@@ -414,7 +493,7 @@ appsTbody.addEventListener("change", async (event) => {
     });
     const index = appsCache.findIndex((item) => String(item.id) === id);
     if (index >= 0) {
-      appsCache[index].status = target.value;
+      appsCache[index].status = nextStatus;
       appsCache[index].updated_at = new Date().toISOString();
     }
     renderAll();

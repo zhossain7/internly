@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Internly Applications</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <script>
       (function () {
         try {
@@ -13,22 +14,23 @@
             document.documentElement.setAttribute("data-theme", saved);
             return;
           }
-          if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
-            document.documentElement.setAttribute("data-theme", "dark");
-          }
+          document.documentElement.setAttribute("data-theme", "dark");
         } catch (error) {
           /* no-op */
         }
       })();
     </script>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/overhaul.css" />
   </head>
   <body data-page="applications">
     <main class="shell">
       <nav class="top-nav card">
         <a class="brand-lockup" href="/">
-          <strong>Internly</strong>
-          <span>internships + grad roles</span>
+          <span class="brand-top">
+            <img class="brand-icon" src="/favicon.png" alt="" />
+            <strong class="brand-wordmark">Internly</strong>
+          </span>
         </a>
         <div class="nav-center">
           <div class="nav-links nav-links-fixed">
@@ -47,7 +49,7 @@
             <span class="theme-switch-track" aria-hidden="true">
               <span class="theme-switch-knob"></span>
             </span>
-            <span id="themeSwitchLabel" class="theme-switch-label">Light</span>
+            <span id="themeSwitchLabel" class="theme-switch-label">Dark</span>
           </label>
           <span id="sessionChip" class="session-chip">Checking session</span>
           <button id="logoutBtn" class="session-logout" type="button">Sign Out</button>
@@ -83,6 +85,10 @@
               <option value="status_asc">Status (A-Z)</option>
             </select>
           </label>
+          <div class="apps-export-actions">
+            <button id="downloadTemplateBtn" class="secondary" type="button">Excel Template</button>
+            <button id="exportExcelBtn" type="button">Export Excel</button>
+          </div>
         </div>
 
         <div class="apps-stats" id="appsStats">

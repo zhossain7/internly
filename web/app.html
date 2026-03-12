@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Internly App</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <script>
       (function () {
         try {
@@ -13,22 +14,23 @@
             document.documentElement.setAttribute("data-theme", saved);
             return;
           }
-          if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
-            document.documentElement.setAttribute("data-theme", "dark");
-          }
+          document.documentElement.setAttribute("data-theme", "dark");
         } catch (error) {
           /* no-op */
         }
       })();
     </script>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/overhaul.css" />
   </head>
-  <body data-page="home">
+  <body data-page="app">
     <main class="shell">
       <nav id="topNav" class="top-nav card">
         <a class="brand-lockup" href="/">
-          <strong>Internly</strong>
-          <span>internships + grad roles</span>
+          <span class="brand-top">
+            <img class="brand-icon" src="/favicon.png" alt="" />
+            <strong class="brand-wordmark">Internly</strong>
+          </span>
         </a>
         <div class="nav-center">
           <div id="navLinks" class="nav-links nav-links-fixed">
@@ -47,63 +49,12 @@
             <span class="theme-switch-track" aria-hidden="true">
               <span class="theme-switch-knob"></span>
             </span>
-            <span id="themeSwitchLabel" class="theme-switch-label">Light</span>
+            <span id="themeSwitchLabel" class="theme-switch-label">Dark</span>
           </label>
           <span id="sessionChip" class="session-chip">Checking session</span>
           <button id="logoutBtn" class="session-logout" type="button">Sign Out</button>
         </div>
       </nav>
-
-      <header id="home" class="hero card">
-        <div class="hero-top">
-          <div>
-            <p class="eyebrow">Internship and Graduate Roles</p>
-            <h1>Internly</h1>
-          </div>
-        </div>
-        <p class="hero-copy">
-          Minimal pipeline for saving opportunities, extracting details from links, PDFs, and images, and tracking
-          every application stage.
-        </p>
-        <div class="hero-chips">
-          <span class="chip">Local-first</span>
-          <span class="chip">Smart URL Extraction</span>
-          <span class="chip">PDF + Image OCR</span>
-        </div>
-      </header>
-
-      <section id="capabilities" class="card capability-card">
-        <div class="section-head capability-head">
-          <h2>Capability Console</h2>
-          <p id="capabilityTicker" class="capability-ticker">
-            Capture from links, screenshots, and PDFs in one flow.
-          </p>
-        </div>
-        <div class="capability-grid">
-          <article class="capability-tile" data-reveal>
-            <h3>Smart Ingestion</h3>
-            <ul class="capability-list">
-              <li>URL extraction for HTML, PDF, and image links</li>
-              <li>Manual quick-add for edge cases</li>
-              <li>Field-level review before save</li>
-            </ul>
-          </article>
-          <article class="capability-tile" data-reveal>
-            <h3>OCR Pipeline</h3>
-            <ul class="capability-list">
-              <li>Scanned PDFs via OCR fallback</li>
-              <li>Screenshots and images supported</li>
-              <li>Deadline + company + role heuristics</li>
-            </ul>
-          </article>
-          <article class="capability-tile" data-reveal>
-            <h3>Live Status Mix</h3>
-            <div id="statusSnapshot" class="status-snapshot">
-              <p class="snapshot-empty">No applications yet.</p>
-            </div>
-          </article>
-        </div>
-      </section>
 
       <section class="card pulse-card">
         <div class="pulse-head">
@@ -181,7 +132,7 @@
             </label>
             <label>
               Status
-              <select id="status" name="status"></select>
+              <select id="status" name="status" class="table-status status-wishlist"></select>
             </label>
             <label class="full-width">
               Source URL

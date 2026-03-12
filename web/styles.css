@@ -1133,10 +1133,17 @@ button.danger:hover {
 
 .apps-toolbar {
   display: grid;
-  grid-template-columns: 1.7fr 1fr 1fr;
+  grid-template-columns: 1.7fr 1fr 1fr auto;
   gap: 10px;
   margin-bottom: 12px;
   padding: 0 6px;
+}
+
+.apps-export-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .apps-search {
@@ -1441,6 +1448,11 @@ tbody tr:hover {
     grid-column: 1 / -1;
   }
 
+  .apps-export-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
   .apps-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1553,6 +1565,10 @@ tbody tr:hover {
   .apps-toolbar,
   .apps-stats {
     grid-template-columns: 1fr;
+  }
+
+  .apps-export-actions {
+    justify-content: flex-start;
   }
 
   .capability-grid {

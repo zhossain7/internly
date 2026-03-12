@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Internly</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <script>
       (function () {
         try {
@@ -13,22 +14,23 @@
             document.documentElement.setAttribute("data-theme", saved);
             return;
           }
-          if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
-            document.documentElement.setAttribute("data-theme", "dark");
-          }
+          document.documentElement.setAttribute("data-theme", "dark");
         } catch (error) {
           /* no-op */
         }
       })();
     </script>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/overhaul.css" />
   </head>
   <body class="landing-body">
     <main class="landing-shell">
       <nav class="marketing-nav card">
         <a class="brand-lockup" href="/">
-          <strong>Internly</strong>
-          <span>internships + grad roles</span>
+          <span class="brand-top">
+            <img class="brand-icon" src="/favicon.png" alt="" />
+            <strong class="brand-wordmark">Internly</strong>
+          </span>
         </a>
         <div class="nav-center">
           <div class="marketing-links">
@@ -47,7 +49,7 @@
             <span class="theme-switch-track" aria-hidden="true">
               <span class="theme-switch-knob"></span>
             </span>
-            <span id="themeSwitchLabel" class="theme-switch-label">Light</span>
+            <span id="themeSwitchLabel" class="theme-switch-label">Dark</span>
           </label>
         </div>
         <a class="nav-lock" href="/app" aria-label="Go to dashboard">
@@ -60,15 +62,24 @@
       </nav>
 
       <header class="card marketing-hero">
-        <p class="eyebrow">Internship + Graduate Pipeline</p>
-        <h1>Track every application in one clean workflow.</h1>
-        <p class="hero-copy">
-          Internly helps you capture roles from links, PDFs, screenshots, and images, then track progress from
-          wishlist to offer with a focused dashboard.
-        </p>
-        <div class="hero-cta">
-          <a class="cta-primary" href="/app">Launch Dashboard</a>
-          <a class="page-link" href="/applications">Open Full Applications</a>
+        <div class="marketing-hero-grid">
+          <div class="marketing-hero-copy">
+            <p class="eyebrow">Internship + Graduate Pipeline</p>
+            <h1>Track every application in one clean workflow.</h1>
+            <p class="hero-copy">
+              Internly helps you capture roles from links, PDFs, screenshots, and images, then track progress from
+              wishlist to offer with a focused dashboard.
+            </p>
+            <div class="hero-cta">
+              <a class="cta-primary" href="/app">Launch Dashboard</a>
+              <a class="page-link" href="/applications">Open Full Applications</a>
+            </div>
+          </div>
+
+          <aside class="brand-orbit" aria-label="Internly brand visual">
+            <span class="brand-orbit-glow" aria-hidden="true"></span>
+            <img class="brand-orbit-image" src="/favicon.png" alt="Internly brand mark" />
+          </aside>
         </div>
       </header>
 
@@ -146,10 +157,7 @@
           } catch (error) {
             /* no-op */
           }
-          if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
-            return "dark";
-          }
-          return "light";
+          return "dark";
         }
 
         apply(getInitial());
