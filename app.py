@@ -1456,6 +1456,14 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 )
             except sqlite3.IntegrityError as error:
                 raise ValueError("Username already exists.") from error
+            user_count_row = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()
+            user_count = int(user_count_row["count"]) if user_count_row else 0
+            if user_count == 1:
+                # Migrate any pre-auth legacy rows to the first registered account.
+                conn.execute(
+                    "UPDATE applications SET user_id = ? WHERE user_id IS NULL",
+                    (cursor.lastrowid,),
+                )
             conn.commit()
             row = conn.execute(
                 "SELECT id, username FROM users WHERE id = ?",
