@@ -25,17 +25,38 @@
   </head>
   <body data-page="applications">
     <main class="shell">
+      <nav class="top-nav card">
+        <a class="brand-lockup" href="/">
+          <strong>Internly</strong>
+          <span>internships + grad roles</span>
+        </a>
+        <div class="nav-center">
+          <div class="nav-links nav-links-fixed">
+            <a class="nav-link" href="/">Home</a>
+            <a class="nav-link" href="/app">Dashboard</a>
+            <a class="nav-link is-active" href="/applications">Applications</a>
+          </div>
+          <label class="theme-switch-wrap" for="themeSwitch">
+            <input
+              id="themeSwitch"
+              class="theme-switch-input"
+              type="checkbox"
+              role="switch"
+              aria-label="Toggle dark mode"
+            />
+            <span class="theme-switch-track" aria-hidden="true">
+              <span class="theme-switch-knob"></span>
+            </span>
+            <span id="themeSwitchLabel" class="theme-switch-label">Light</span>
+          </label>
+        </div>
+      </nav>
+
       <header class="hero card apps-hero">
         <div class="hero-top">
           <div>
             <p class="eyebrow">Application Management</p>
             <h1>Applications</h1>
-          </div>
-          <div class="apps-hero-actions">
-            <a class="page-link" href="/app">Back To App</a>
-            <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle dark mode" aria-pressed="false">
-              Dark
-            </button>
           </div>
         </div>
         <p class="hero-copy">Search, filter, sort, and update your entire internship and grad-role pipeline.</p>

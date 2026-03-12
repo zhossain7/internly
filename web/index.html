@@ -30,14 +30,26 @@
           <strong>Internly</strong>
           <span>internships + grad roles</span>
         </a>
-        <div class="marketing-links">
-          <a class="nav-link" href="#features">Features</a>
-          <a class="nav-link" href="#how">How It Works</a>
-          <a class="nav-link nav-link-solid" href="/app">Open App</a>
+        <div class="nav-center">
+          <div class="marketing-links">
+            <a class="nav-link is-active" href="/">Home</a>
+            <a class="nav-link" href="/app">Dashboard</a>
+            <a class="nav-link" href="/applications">Applications</a>
+          </div>
+          <label class="theme-switch-wrap" for="themeSwitch">
+            <input
+              id="themeSwitch"
+              class="theme-switch-input"
+              type="checkbox"
+              role="switch"
+              aria-label="Toggle dark mode"
+            />
+            <span class="theme-switch-track" aria-hidden="true">
+              <span class="theme-switch-knob"></span>
+            </span>
+            <span id="themeSwitchLabel" class="theme-switch-label">Light</span>
+          </label>
         </div>
-        <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle dark mode" aria-pressed="false">
-          Dark
-        </button>
       </nav>
 
       <header class="card marketing-hero">
@@ -49,7 +61,7 @@
         </p>
         <div class="hero-cta">
           <a class="cta-primary" href="/app">Launch Dashboard</a>
-          <a class="page-link" href="/applications.html">Open Full Applications</a>
+          <a class="page-link" href="/applications">Open Full Applications</a>
         </div>
       </header>
 
@@ -107,14 +119,17 @@
     <script>
       (function () {
         var key = "internly-theme";
-        var btn = document.getElementById("themeToggle");
-        if (!btn) return;
+        var themeSwitch = document.getElementById("themeSwitch");
+        var themeSwitchLabel = document.getElementById("themeSwitchLabel");
+        if (!themeSwitch) return;
 
         function apply(theme) {
           document.documentElement.setAttribute("data-theme", theme);
           var isDark = theme === "dark";
-          btn.textContent = isDark ? "Light" : "Dark";
-          btn.setAttribute("aria-pressed", isDark ? "true" : "false");
+          themeSwitch.checked = isDark;
+          if (themeSwitchLabel) {
+            themeSwitchLabel.textContent = isDark ? "Dark" : "Light";
+          }
         }
 
         function getInitial() {
@@ -131,9 +146,8 @@
         }
 
         apply(getInitial());
-        btn.addEventListener("click", function () {
-          var current = document.documentElement.getAttribute("data-theme") || "light";
-          var next = current === "dark" ? "light" : "dark";
+        themeSwitch.addEventListener("change", function () {
+          var next = themeSwitch.checked ? "dark" : "light";
           apply(next);
           try {
             window.localStorage.setItem(key, next);

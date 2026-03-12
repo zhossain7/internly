@@ -21,7 +21,7 @@ python app.py
 Main views:
 - Product homepage: `/`
 - App dashboard: `/app`
-- Full applications workspace: `/applications.html`
+- Full applications workspace: `/applications`
 
 The SQLite database (`internly.db`) is created automatically in the project root.
 

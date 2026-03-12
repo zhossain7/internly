@@ -26,24 +26,30 @@
   <body data-page="home">
     <main class="shell">
       <nav id="topNav" class="top-nav card">
-        <a class="brand-lockup" href="#home">
+        <a class="brand-lockup" href="/">
           <strong>Internly</strong>
           <span>internships + grad roles</span>
         </a>
-        <button id="navMenuToggle" class="nav-menu-toggle secondary" type="button" aria-label="Toggle navigation">
-          Menu
-        </button>
-        <div id="navLinks" class="nav-links">
-          <a class="nav-link" href="/">Product</a>
-          <a class="nav-link is-active" href="#home">Home</a>
-          <a class="nav-link" href="#capabilities">Capabilities</a>
-          <a class="nav-link" href="#capture">Capture</a>
-          <a class="nav-link" href="#applications-preview">Preview</a>
-          <a class="nav-link nav-link-solid" href="/applications.html">Applications</a>
+        <div class="nav-center">
+          <div id="navLinks" class="nav-links nav-links-fixed">
+            <a class="nav-link" href="/">Home</a>
+            <a class="nav-link is-active" href="/app">Dashboard</a>
+            <a class="nav-link" href="/applications">Applications</a>
+          </div>
+          <label class="theme-switch-wrap" for="themeSwitch">
+            <input
+              id="themeSwitch"
+              class="theme-switch-input"
+              type="checkbox"
+              role="switch"
+              aria-label="Toggle dark mode"
+            />
+            <span class="theme-switch-track" aria-hidden="true">
+              <span class="theme-switch-knob"></span>
+            </span>
+            <span id="themeSwitchLabel" class="theme-switch-label">Light</span>
+          </label>
         </div>
-        <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle dark mode" aria-pressed="false">
-          Dark
-        </button>
       </nav>
 
       <header id="home" class="hero card">
@@ -231,7 +237,7 @@
             <p>Latest 5 roles. Open the full workspace for complete tracking.</p>
             <p id="previewMeta" class="preview-meta">Loading...</p>
           </div>
-          <a id="applicationsPageLink" class="page-link" href="/applications.html">Open Full Applications</a>
+          <a id="applicationsPageLink" class="page-link" href="/applications">Open Full Applications</a>
         </div>
         <div class="status-legend">
           <span class="status-key status-wishlist">Wishlist</span>

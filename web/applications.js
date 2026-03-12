@@ -20,6 +20,8 @@ const appsUrgentCount = document.getElementById("appsUrgentCount");
 const appsShowingCount = document.getElementById("appsShowingCount");
 const appsUpdatedAt = document.getElementById("appsUpdatedAt");
 const themeToggle = document.getElementById("themeToggle");
+const themeSwitch = document.getElementById("themeSwitch");
+const themeSwitchLabel = document.getElementById("themeSwitchLabel");
 const toast = document.getElementById("toast");
 
 let appsCache = [];
@@ -142,21 +144,41 @@ function resolveInitialTheme() {
 
 function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
-  if (!themeToggle) return;
   const isDark = theme === "dark";
-  themeToggle.textContent = isDark ? "Light" : "Dark";
-  themeToggle.setAttribute("aria-pressed", isDark ? "true" : "false");
+  if (themeSwitch) {
+    themeSwitch.checked = isDark;
+  }
+  if (themeSwitchLabel) {
+    themeSwitchLabel.textContent = isDark ? "Dark" : "Light";
+  }
+  if (themeToggle) {
+    themeToggle.textContent = isDark ? "Light" : "Dark";
+    themeToggle.setAttribute("aria-pressed", isDark ? "true" : "false");
+  }
 }
 
 function initThemeToggle() {
-  if (!themeToggle) return;
+  if (!themeToggle && !themeSwitch) return;
   applyTheme(resolveInitialTheme());
-  themeToggle.addEventListener("click", () => {
-    const currentTheme = document.documentElement.getAttribute("data-theme");
-    const nextTheme = currentTheme === "dark" ? "light" : "dark";
+
+  const setTheme = (nextTheme) => {
     applyTheme(nextTheme);
     window.localStorage.setItem(THEME_KEY, nextTheme);
-  });
+  };
+
+  if (themeToggle) {
+    themeToggle.addEventListener("click", () => {
+      const currentTheme = document.documentElement.getAttribute("data-theme");
+      const nextTheme = currentTheme === "dark" ? "light" : "dark";
+      setTheme(nextTheme);
+    });
+  }
+
+  if (themeSwitch) {
+    themeSwitch.addEventListener("change", () => {
+      setTheme(themeSwitch.checked ? "dark" : "light");
+    });
+  }
 }
 
 function populateStatusFilters() {

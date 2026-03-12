@@ -18,6 +18,8 @@ const filterStatus = document.getElementById("filterStatus");
 const tbody = document.getElementById("applicationsTbody");
 const toast = document.getElementById("toast");
 const themeToggle = document.getElementById("themeToggle");
+const themeSwitch = document.getElementById("themeSwitch");
+const themeSwitchLabel = document.getElementById("themeSwitchLabel");
 const metricTotal = document.getElementById("metricTotal");
 const metricActive = document.getElementById("metricActive");
 const metricInterviewTrack = document.getElementById("metricInterviewTrack");
@@ -107,23 +109,42 @@ function resolveInitialTheme() {
 
 function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
-  if (!themeToggle) return;
   const isDark = theme === "dark";
-  themeToggle.textContent = isDark ? "Light" : "Dark";
-  themeToggle.setAttribute("aria-pressed", isDark ? "true" : "false");
+  if (themeSwitch) {
+    themeSwitch.checked = isDark;
+  }
+  if (themeSwitchLabel) {
+    themeSwitchLabel.textContent = isDark ? "Dark" : "Light";
+  }
+  if (themeToggle) {
+    themeToggle.textContent = isDark ? "Light" : "Dark";
+    themeToggle.setAttribute("aria-pressed", isDark ? "true" : "false");
+  }
 }
 
 function initThemeToggle() {
-  if (!themeToggle) return;
+  if (!themeToggle && !themeSwitch) return;
   const initialTheme = resolveInitialTheme();
   applyTheme(initialTheme);
 
-  themeToggle.addEventListener("click", () => {
-    const currentTheme = document.documentElement.getAttribute("data-theme");
-    const nextTheme = currentTheme === "dark" ? "light" : "dark";
+  const setTheme = (nextTheme) => {
     applyTheme(nextTheme);
     window.localStorage.setItem(THEME_KEY, nextTheme);
-  });
+  };
+
+  if (themeToggle) {
+    themeToggle.addEventListener("click", () => {
+      const currentTheme = document.documentElement.getAttribute("data-theme");
+      const nextTheme = currentTheme === "dark" ? "light" : "dark";
+      setTheme(nextTheme);
+    });
+  }
+
+  if (themeSwitch) {
+    themeSwitch.addEventListener("change", () => {
+      setTheme(themeSwitch.checked ? "dark" : "light");
+    });
+  }
 }
 
 function populateStatusOptions() {
