@@ -20,6 +20,7 @@ python app.py
 
 Main views:
 - Product homepage: `/`
+- Login/access page: `/login`
 - App dashboard: `/app`
 - Full applications workspace: `/applications`
 

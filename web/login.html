@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Internly</title>
+    <title>Internly Access</title>
     <script>
       (function () {
         try {
@@ -32,8 +32,8 @@
         </a>
         <div class="nav-center">
           <div class="marketing-links">
-            <a class="nav-link is-active" href="/">Home</a>
-            <a class="nav-link" href="/app">Dashboard</a>
+            <a class="nav-link" href="/">Home</a>
+            <a class="nav-link is-active" href="/app">Dashboard</a>
             <a class="nav-link" href="/applications">Applications</a>
           </div>
           <label class="theme-switch-wrap" for="themeSwitch">
@@ -59,67 +59,51 @@
         </a>
       </nav>
 
-      <header class="card marketing-hero">
-        <p class="eyebrow">Internship + Graduate Pipeline</p>
-        <h1>Track every application in one clean workflow.</h1>
-        <p class="hero-copy">
-          Internly helps you capture roles from links, PDFs, screenshots, and images, then track progress from
-          wishlist to offer with a focused dashboard.
-        </p>
-        <div class="hero-cta">
-          <a class="cta-primary" href="/app">Launch Dashboard</a>
-          <a class="page-link" href="/applications">Open Full Applications</a>
-        </div>
-      </header>
-
-      <section id="features" class="landing-grid">
-        <article class="card feature-card">
-          <h2>Capture Fast</h2>
-          <p>Paste a job link or upload a PDF/image and auto-extract role, company, location, and deadline.</p>
-        </article>
-        <article class="card feature-card">
-          <h2>Stay Organized</h2>
-          <p>Keep all opportunities in one place with status color-coding, deadline urgency, and searchable records.</p>
-        </article>
-        <article class="card feature-card">
-          <h2>Built For Scale</h2>
-          <p>API-first architecture so you can ship a mobile app later without rebuilding your data model.</p>
-        </article>
-      </section>
-
-      <section id="how" class="card marketing-flow">
+      <section class="card auth-card">
         <div class="section-head">
-          <h2>How It Works</h2>
-          <p>From discovery to decision in four steps.</p>
+          <h2>Access Internly</h2>
+          <p>Login for saved dashboards, or continue as guest for temporary tracking.</p>
         </div>
-        <div class="flow-steps">
-          <article class="flow-step">
-            <span>1</span>
-            <h3>Find Roles</h3>
-            <p>Collect internships and grad roles from job boards and company pages.</p>
-          </article>
-          <article class="flow-step">
-            <span>2</span>
-            <h3>Extract Details</h3>
-            <p>Use link/file extraction to prefill fields in seconds.</p>
-          </article>
-          <article class="flow-step">
-            <span>3</span>
-            <h3>Track Progress</h3>
-            <p>Update statuses, deadlines, and notes as your pipeline evolves.</p>
-          </article>
-          <article class="flow-step">
-            <span>4</span>
-            <h3>Move Faster</h3>
-            <p>Use momentum and deadline signals to focus where it matters now.</p>
-          </article>
-        </div>
-      </section>
+        <div class="auth-grid">
+          <form id="loginForm" class="auth-form">
+            <h3>Login</h3>
+            <label>
+              Username
+              <input id="loginUsername" name="username" autocomplete="username" required />
+            </label>
+            <label>
+              Password
+              <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
+            </label>
+            <button type="submit">Login</button>
+          </form>
 
-      <section class="card marketing-footer">
-        <h2>Ready to run your search like a system?</h2>
-        <p>Open the app workspace and start logging applications now.</p>
-        <a class="cta-primary" href="/app">Go To App</a>
+          <form id="registerForm" class="auth-form">
+            <h3>Create Account</h3>
+            <label>
+              Username
+              <input id="registerUsername" name="username" autocomplete="username" required />
+            </label>
+            <label>
+              Password (min 8)
+              <input
+                id="registerPassword"
+                name="password"
+                type="password"
+                minlength="8"
+                autocomplete="new-password"
+                required
+              />
+            </label>
+            <button type="submit">Create Account</button>
+          </form>
+        </div>
+        <div class="auth-row">
+          <button id="guestModeBtn" class="secondary" type="button">Continue As Guest</button>
+          <button id="authLogoutBtn" class="secondary hidden" type="button">Sign Out</button>
+          <a id="continueBtn" class="page-link hidden" href="/app">Continue To Dashboard</a>
+        </div>
+        <p id="authMessage" class="auth-message"></p>
       </section>
     </main>
 
@@ -164,5 +148,6 @@
         });
       })();
     </script>
+    <script src="/auth.js" defer></script>
   </body>
 </html>

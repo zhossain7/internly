@@ -458,7 +458,7 @@ async function init() {
   try {
     sessionState = await getSession();
     if (!sessionState.authenticated) {
-      window.location.href = "/";
+      window.location.href = "/login";
       return;
     }
     updateSessionUI();
@@ -468,7 +468,7 @@ async function init() {
     await loadApplications();
   } catch (error) {
     if (!sessionState.authenticated) {
-      window.location.href = "/";
+      window.location.href = "/login";
       return;
     }
     showToast(error.message, true);

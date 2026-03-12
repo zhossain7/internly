@@ -438,6 +438,29 @@ body::after {
   background: color-mix(in srgb, var(--accent) 84%, black);
 }
 
+.nav-lock {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
+  color: var(--muted);
+}
+
+.nav-lock svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.nav-lock:hover {
+  color: var(--text);
+  background: var(--secondary-bg);
+}
+
 .nav-menu-toggle {
   display: none;
   border-radius: 999px;
@@ -1472,6 +1495,10 @@ tbody tr:hover {
 
   .theme-switch-wrap {
     margin-left: 0;
+  }
+
+  .nav-lock {
+    margin-left: auto;
   }
 
   .session-chip,

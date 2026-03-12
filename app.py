@@ -1107,6 +1107,13 @@ class InternlyHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path in {"/login", "/login/"}:
+            if self._require_session():
+                self._redirect("/app")
+                return
+            self._serve_static("/login.html")
+            return
+
         if path == "/api/applications":
             session, error = self._require_user_session()
             if error:
@@ -1137,14 +1144,14 @@ class InternlyHandler(BaseHTTPRequestHandler):
 
         if path in {"/app", "/app/"}:
             if not self._require_session():
-                self._redirect("/")
+                self._redirect("/login")
                 return
             self._serve_static("/app.html")
             return
 
         if path in {"/applications", "/applications/"}:
             if not self._require_session():
-                self._redirect("/")
+                self._redirect("/login")
                 return
             self._serve_static("/applications.html")
             return
@@ -1422,7 +1429,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
     def _serve_static(self, path: str) -> None:
         relative = path.lstrip("/") or "index.html"
         if relative in {"app.html", "applications.html"} and not self._require_session():
-            self._redirect("/")
+            self._redirect("/login")
             return
         file_path = (WEB_DIR / relative).resolve()
         try:
