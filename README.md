@@ -3,74 +3,49 @@
 
 # Internly
 
-Internly is a local internship and graduate-role tracker with:
+I built Internly after struggling to track graduate and internship applications across too many tabs, screenshots, and notes. I kept missing deadlines and losing context between OA stages, interviews, and follow-ups, so I made a product that puts everything in one place and keeps the process clear.
 
-- Application tracking (company, role, deadline, status, notes).
-- Link extraction from job URLs (HTML/PDF/image auto-detected).
-- File extraction from PDFs, screenshots, and images.
-- A browser UI now, with an API-first design for future mobile apps.
+Internly is a focused pipeline for internship and graduate-role tracking with built-in extraction for links, PDFs, and screenshots.
 
-## Quick Start
+## What Internly Does
 
-1. Make sure Python 3.10+ is installed.
-2. Start the app:
+- Tracks roles by company, position, deadline, status, notes, and source link.
+- Extracts useful fields from job links (HTML, PDF, and image links auto-detected).
+- Extracts from uploaded PDFs and screenshots using OCR fallback where needed.
+- Supports secure sign-in and guest mode.
+- Exports your data to a structured Excel spreadsheet.
+
+## Product Flow
+
+- Home: product overview and core capabilities.
+- Dashboard (`/app`): quick add, extraction, and momentum view.
+- Applications (`/applications`): full table view, filtering, sorting, and export.
+- Login (`/login`): account access or guest session.
+
+## Run Locally
+
+1. Install Python 3.10+.
+2. Start Internly:
 
 ```bash
 python app.py
 ```
 
-3. Open: `http://127.0.0.1:8000`
+3. Open `http://127.0.0.1:8000`.
 
-Main views:
-- Product homepage: `/`
-- Login/access page: `/login`
-- App dashboard: `/app`
-- Full applications workspace: `/applications`
+Internly creates `internly.db` automatically in the project root.
 
-The SQLite database (`internly.db`) is created automatically in the project root.
+## Extraction Stack (Recommended)
 
-## Extraction Tooling (Optional but Recommended)
+- `tesseract` for OCR on images.
+- `pdftotext` for text-based PDFs.
+- `pdftoppm` + `tesseract` for scanned PDFs.
 
-For high-quality extraction from mixed file types:
-
-- `tesseract` for image OCR
-- `pdftotext` for text-based PDFs
-- `pdftoppm` + `tesseract` for scanned PDFs (OCR fallback)
-
-If tools are unavailable, you can still use manual entry and text extraction.
-
-## API Endpoints
-
-- `GET /api/health`
-- `GET /api/session`
-- `POST /api/auth/register` with `{ "username": "...", "password": "..." }`
-- `POST /api/auth/login` with `{ "username": "...", "password": "..." }`
-- `POST /api/auth/guest`
-- `POST /api/auth/logout`
-- `GET /api/applications`
-- `GET /api/applications/template.xlsx` (formatted Excel template with all fields)
-- `GET /api/applications/export.xlsx` (export your tracked applications to Excel)
-- `POST /api/applications`
-- `GET /api/applications/:id`
-- `PATCH /api/applications/:id`
-- `DELETE /api/applications/:id`
-- `POST /api/extract/link` with `{ "url": "https://..." }` (auto-detect HTML/PDF/image)
-- `POST /api/extract/file` with `{ "file_base64": "data:...;base64,...", "filename": "job.pdf", "mime_type": "application/pdf" }`
-- `POST /api/extract/screenshot` with `{ "image_base64": "data:image/png;base64,...", "filename": "job.png" }`
-- `POST /api/extract/text` with `{ "text": "..." }`
-
-## Mobile App Path
-
-The backend API is already separated from the frontend, so you can build a phone app later without changing data storage:
-
-1. Build a React Native/Expo client.
-2. Reuse the same API routes for CRUD + extraction.
-3. Add authentication and cloud DB when you want multi-device sync.
+If these tools are not installed, you can still review and enter details manually.
 
 ## Notes
 
-- Dashboard and applications routes require either logged-in or guest session.
-- Guest mode is temporary and does not save application data to the server database.
-- Excel export is available for signed-in users; guest mode can still download the blank template.
-- Link/file extraction is heuristic-based and should be reviewed before saving.
-- Dates are normalized to `YYYY-MM-DD` where possible.
+- Routes for dashboard and applications require a signed-in or guest session.
+- Guest mode is temporary and does not persist data to the server database.
+- Export is available for signed-in users; guests can still download the blank template.
+- Extraction is heuristic-based, so review fields before saving.
