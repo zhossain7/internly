@@ -38,6 +38,11 @@ If tools are unavailable, you can still use manual entry and text extraction.
 ## API Endpoints
 
 - `GET /api/health`
+- `GET /api/session`
+- `POST /api/auth/register` with `{ "username": "...", "password": "..." }`
+- `POST /api/auth/login` with `{ "username": "...", "password": "..." }`
+- `POST /api/auth/guest`
+- `POST /api/auth/logout`
 - `GET /api/applications`
 - `POST /api/applications`
 - `GET /api/applications/:id`
@@ -58,5 +63,7 @@ The backend API is already separated from the frontend, so you can build a phone
 
 ## Notes
 
+- Dashboard and applications routes require either logged-in or guest session.
+- Guest mode is temporary and does not save application data to the server database.
 - Link/file extraction is heuristic-based and should be reviewed before saving.
 - Dates are normalized to `YYYY-MM-DD` where possible.

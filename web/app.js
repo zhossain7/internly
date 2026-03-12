@@ -20,6 +20,8 @@ const toast = document.getElementById("toast");
 const themeToggle = document.getElementById("themeToggle");
 const themeSwitch = document.getElementById("themeSwitch");
 const themeSwitchLabel = document.getElementById("themeSwitchLabel");
+const sessionChip = document.getElementById("sessionChip");
+const logoutBtn = document.getElementById("logoutBtn");
 const metricTotal = document.getElementById("metricTotal");
 const metricActive = document.getElementById("metricActive");
 const metricInterviewTrack = document.getElementById("metricInterviewTrack");
@@ -39,7 +41,13 @@ const capabilityTicker = document.getElementById("capabilityTicker");
 const statusSnapshot = document.getElementById("statusSnapshot");
 const revealElements = Array.from(document.querySelectorAll("[data-reveal]"));
 const THEME_KEY = "internly-theme";
+const GUEST_APPS_KEY = "internly-guest-applications";
 let applicationsCache = [];
+let sessionState = {
+  authenticated: false,
+  is_guest: false,
+  username: null,
+};
 const PAGE_MODE = document.body.dataset.page || "home";
 const IS_HOME_PAGE = PAGE_MODE === "home";
 
@@ -197,6 +205,65 @@ async function api(path, options = {}) {
     throw new Error(message);
   }
   return data;
+}
+
+async function getSession() {
+  const response = await fetch("/api/session");
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `Session check failed (${response.status})`);
+  }
+  return data;
+}
+
+function loadGuestApplications() {
+  try {
+    const raw = window.sessionStorage.getItem(GUEST_APPS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveGuestApplications(items) {
+  try {
+    window.sessionStorage.setItem(GUEST_APPS_KEY, JSON.stringify(items));
+  } catch (error) {
+    /* no-op */
+  }
+}
+
+function modeText() {
+  if (!sessionState.authenticated) return "Session required";
+  if (sessionState.is_guest) return "Guest mode (not saved)";
+  return `Signed in: ${sessionState.username || "user"}`;
+}
+
+function updateSessionUI() {
+  if (sessionChip) {
+    sessionChip.textContent = modeText();
+    sessionChip.classList.toggle("guest", !!sessionState.is_guest);
+  }
+  if (logoutBtn) {
+    logoutBtn.textContent = sessionState.is_guest ? "Exit Guest" : "Sign Out";
+  }
+}
+
+async function logoutAndReturnHome() {
+  try {
+    await api("/api/auth/logout", { method: "POST", body: "{}" });
+  } catch (error) {
+    /* no-op */
+  }
+  try {
+    window.sessionStorage.removeItem(GUEST_APPS_KEY);
+  } catch (error) {
+    /* no-op */
+  }
+  window.location.href = "/";
 }
 
 function statusCell(application) {
@@ -552,6 +619,12 @@ function renderRows(applications) {
 }
 
 async function loadApplications() {
+  if (sessionState.is_guest) {
+    applicationsCache = loadGuestApplications();
+    renderRows(getFilteredApplications());
+    renderMomentumPanel(applicationsCache);
+    return;
+  }
   const data = await api("/api/applications");
   applicationsCache = (data.items || []).map((item) => ({
     ...item,
@@ -566,6 +639,32 @@ applicationForm.addEventListener("submit", async (event) => {
   const payload = toPayload(applicationForm);
 
   try {
+    if (sessionState.is_guest) {
+      const now = new Date().toISOString();
+      const guestItem = {
+        id: `guest-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+        company: payload.company || "",
+        role: payload.role || "",
+        location: payload.location || "",
+        job_type: payload.job_type || "",
+        deadline: payload.deadline || null,
+        status: normalizeStatusForUI(payload.status || "wishlist"),
+        source_url: payload.source_url || "",
+        compensation: payload.compensation || "",
+        notes: payload.notes || "",
+        created_at: now,
+        updated_at: now,
+      };
+      applicationsCache = [guestItem, ...applicationsCache];
+      saveGuestApplications(applicationsCache);
+      applicationForm.reset();
+      statusSelect.value = "wishlist";
+      renderRows(getFilteredApplications());
+      renderMomentumPanel(applicationsCache);
+      showToast("Saved in guest mode (temporary only).");
+      return;
+    }
+
     await api("/api/applications", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -659,6 +758,19 @@ tbody.addEventListener("change", async (event) => {
   const id = target.dataset.statusId;
   if (!id) return;
   try {
+    if (sessionState.is_guest) {
+      const index = applicationsCache.findIndex((item) => String(item.id) === id);
+      if (index >= 0) {
+        applicationsCache[index].status = normalizeStatusForUI(target.value);
+        applicationsCache[index].updated_at = new Date().toISOString();
+      }
+      saveGuestApplications(applicationsCache);
+      renderRows(getFilteredApplications());
+      renderMomentumPanel(applicationsCache);
+      showToast("Guest status updated (temporary).");
+      return;
+    }
+
     await api(`/api/applications/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ status: target.value }),
@@ -679,6 +791,15 @@ tbody.addEventListener("click", async (event) => {
   if (!confirmed) return;
 
   try {
+    if (sessionState.is_guest) {
+      applicationsCache = applicationsCache.filter((item) => String(item.id) !== id);
+      saveGuestApplications(applicationsCache);
+      renderRows(getFilteredApplications());
+      renderMomentumPanel(applicationsCache);
+      showToast("Guest application removed.");
+      return;
+    }
+
     await api(`/api/applications/${id}`, { method: "DELETE" });
     await loadApplications();
     showToast("Application deleted.");
@@ -696,8 +817,21 @@ async function init() {
   initThemeToggle();
   populateStatusOptions();
   try {
+    sessionState = await getSession();
+    if (!sessionState.authenticated) {
+      window.location.href = "/";
+      return;
+    }
+    updateSessionUI();
+    if (logoutBtn) {
+      logoutBtn.addEventListener("click", logoutAndReturnHome);
+    }
     await loadApplications();
   } catch (error) {
+    if (!sessionState.authenticated) {
+      window.location.href = "/";
+      return;
+    }
     showToast(error.message, true);
   }
 }

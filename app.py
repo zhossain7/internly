@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import subprocess
 import tempfile
+import threading
 from datetime import datetime
 from html.parser import HTMLParser
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
@@ -28,6 +33,8 @@ MAX_HTML_BYTES = 1_200_000
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_OCR_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_PDF_OCR_PAGES = 5
+PASSWORD_HASH_ITERATIONS = 260_000
+SESSION_COOKIE_NAME = "internly_session"
 
 ALLOWED_STATUSES = {
     "wishlist",
@@ -56,6 +63,9 @@ APPLICATION_COLUMNS = (
     "updated_at",
 )
 
+SESSION_STORE: dict[str, dict[str, Any]] = {}
+SESSION_STORE_LOCK = threading.Lock()
+
 
 def utc_now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -72,6 +82,27 @@ def clean_text(value: Any, *, max_len: int = 8000) -> str | None:
     if not text:
         return None
     return text[:max_len]
+
+
+def hash_password(password: str, *, salt_hex: str | None = None) -> tuple[str, str, int]:
+    salt_bytes = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt_bytes,
+        PASSWORD_HASH_ITERATIONS,
+    )
+    return (salt_bytes.hex(), derived.hex(), PASSWORD_HASH_ITERATIONS)
+
+
+def verify_password(password: str, *, salt_hex: str, expected_hash_hex: str, iterations: int) -> bool:
+    derived = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        bytes.fromhex(salt_hex),
+        iterations,
+    )
+    return hmac.compare_digest(derived.hex(), expected_hash_hex)
 
 
 def ensure_status(value: Any) -> str:
@@ -366,6 +397,18 @@ def init_db() -> None:
     try:
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                password_iterations INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS applications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 company TEXT NOT NULL,
@@ -382,11 +425,21 @@ def init_db() -> None:
             );
             """
         )
+        column_rows = conn.execute("PRAGMA table_info(applications)").fetchall()
+        column_names = {row[1] for row in column_rows}
+        if "user_id" not in column_names:
+            conn.execute("ALTER TABLE applications ADD COLUMN user_id INTEGER;")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_applications_updated_at ON applications(updated_at DESC);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_applications_user_updated ON applications(user_id, updated_at DESC);"
         )
         # Keep legacy/new labels consistent with backend canonical value.
         conn.execute(
@@ -878,7 +931,13 @@ class InternlyHandler(BaseHTTPRequestHandler):
         # Keep logging concise for local development.
         print(f"[{self.log_date_time_string()}] {self.address_string()} - {format % args}")
 
-    def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+    def _send_json(
+        self,
+        status: int,
+        payload: dict[str, Any],
+        *,
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> None:
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -886,8 +945,74 @@ class InternlyHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+        if extra_headers:
+            for key, value in extra_headers:
+                self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
+
+    def _redirect(self, target: str) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", target)
+        self.end_headers()
+
+    def _build_session_cookie(self, token: str) -> str:
+        return f"{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax"
+
+    def _build_clear_session_cookie(self) -> str:
+        return f"{SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
+    def _read_session_token(self) -> str | None:
+        raw_cookie = self.headers.get("Cookie")
+        if not raw_cookie:
+            return None
+        cookie = SimpleCookie()
+        try:
+            cookie.load(raw_cookie)
+        except Exception:
+            return None
+        morsel = cookie.get(SESSION_COOKIE_NAME)
+        if morsel is None:
+            return None
+        token = morsel.value.strip()
+        return token or None
+
+    def _session_payload(self) -> dict[str, Any]:
+        token = self._read_session_token()
+        if not token:
+            return {}
+        with SESSION_STORE_LOCK:
+            payload = SESSION_STORE.get(token)
+            return dict(payload) if payload else {}
+
+    def _set_session_payload(self, payload: dict[str, Any]) -> str:
+        token = secrets.token_urlsafe(32)
+        with SESSION_STORE_LOCK:
+            SESSION_STORE[token] = payload
+        return token
+
+    def _clear_session(self) -> None:
+        token = self._read_session_token()
+        if not token:
+            return
+        with SESSION_STORE_LOCK:
+            SESSION_STORE.pop(token, None)
+
+    def _require_session(self) -> dict[str, Any] | None:
+        session = self._session_payload()
+        if not session:
+            return None
+        return session
+
+    def _require_user_session(self) -> tuple[dict[str, Any] | None, str | None]:
+        session = self._require_session()
+        if not session:
+            return (None, "Please log in or continue as guest.")
+        if session.get("is_guest"):
+            return (None, "Guest mode cannot save data.")
+        if not session.get("user_id"):
+            return (None, "Invalid session. Please log in again.")
+        return (session, None)
 
     def _send_file(self, path: Path) -> None:
         content = path.read_bytes()
@@ -951,11 +1076,46 @@ class InternlyHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"ok": True, "time": utc_now_iso()})
             return
 
+        if path == "/api/session":
+            session = self._session_payload()
+            if not session:
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "authenticated": False, "is_guest": False, "username": None},
+                )
+                return
+            username = None
+            if session.get("user_id"):
+                conn = open_db()
+                try:
+                    row = conn.execute(
+                        "SELECT username FROM users WHERE id = ?",
+                        (session["user_id"],),
+                    ).fetchone()
+                finally:
+                    conn.close()
+                if row:
+                    username = row["username"]
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "authenticated": True,
+                    "is_guest": bool(session.get("is_guest")),
+                    "username": username,
+                },
+            )
+            return
+
         if path == "/api/applications":
+            session, error = self._require_user_session()
+            if error:
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": error})
+                return
             params = parse_qs(parsed.query)
             status_filter = params.get("status", [None])[0]
             try:
-                data = self._list_applications(status_filter)
+                data = self._list_applications(session["user_id"], status_filter)
             except ValueError as error:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
                 return
@@ -964,7 +1124,11 @@ class InternlyHandler(BaseHTTPRequestHandler):
 
         app_id = self._parse_application_id()
         if app_id is not None:
-            item = self._get_application(app_id)
+            session, error = self._require_user_session()
+            if error:
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": error})
+                return
+            item = self._get_application(app_id, session["user_id"])
             if not item:
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Application not found."})
                 return
@@ -972,10 +1136,16 @@ class InternlyHandler(BaseHTTPRequestHandler):
             return
 
         if path in {"/app", "/app/"}:
+            if not self._require_session():
+                self._redirect("/")
+                return
             self._serve_static("/app.html")
             return
 
         if path in {"/applications", "/applications/"}:
+            if not self._require_session():
+                self._redirect("/")
+                return
             self._serve_static("/applications.html")
             return
 
@@ -990,9 +1160,99 @@ class InternlyHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
             return
 
-        if path == "/api/applications":
+        if path == "/api/auth/register":
+            username = clean_text(payload.get("username"), max_len=80)
+            password_raw = payload.get("password")
+            if not username or len(username) < 3:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "Username must be at least 3 characters."},
+                )
+                return
+            if not isinstance(password_raw, str) or len(password_raw) < 8:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "Password must be at least 8 characters."},
+                )
+                return
             try:
-                created = self._create_application(payload)
+                user = self._register_user(username.lower(), password_raw)
+            except ValueError as error:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
+                return
+            session_token = self._set_session_payload(
+                {"user_id": user["id"], "is_guest": False, "created_at": utc_now_iso()}
+            )
+            self._send_json(
+                HTTPStatus.CREATED,
+                {
+                    "ok": True,
+                    "authenticated": True,
+                    "is_guest": False,
+                    "username": user["username"],
+                },
+                extra_headers=[("Set-Cookie", self._build_session_cookie(session_token))],
+            )
+            return
+
+        if path == "/api/auth/login":
+            username = clean_text(payload.get("username"), max_len=80)
+            password_raw = payload.get("password")
+            if not username or not isinstance(password_raw, str):
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "Provide `username` and `password`."},
+                )
+                return
+            user = self._authenticate_user(username.lower(), password_raw)
+            if not user:
+                self._send_json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"ok": False, "error": "Invalid username or password."},
+                )
+                return
+            session_token = self._set_session_payload(
+                {"user_id": user["id"], "is_guest": False, "created_at": utc_now_iso()}
+            )
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "authenticated": True,
+                    "is_guest": False,
+                    "username": user["username"],
+                },
+                extra_headers=[("Set-Cookie", self._build_session_cookie(session_token))],
+            )
+            return
+
+        if path == "/api/auth/guest":
+            session_token = self._set_session_payload(
+                {"user_id": None, "is_guest": True, "created_at": utc_now_iso()}
+            )
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "authenticated": True, "is_guest": True, "username": None},
+                extra_headers=[("Set-Cookie", self._build_session_cookie(session_token))],
+            )
+            return
+
+        if path == "/api/auth/logout":
+            self._clear_session()
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "authenticated": False, "is_guest": False, "username": None},
+                extra_headers=[("Set-Cookie", self._build_clear_session_cookie())],
+            )
+            return
+
+        if path == "/api/applications":
+            session, error = self._require_user_session()
+            if error:
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": error})
+                return
+            try:
+                created = self._create_application(payload, session["user_id"])
             except ValueError as error:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
                 return
@@ -1000,6 +1260,12 @@ class InternlyHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/extract/link":
+            if not self._require_session():
+                self._send_json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"ok": False, "error": "Please log in or continue as guest."},
+                )
+                return
             url = clean_text(payload.get("url"), max_len=800)
             if not url or not is_valid_url(url):
                 self._send_json(
@@ -1025,6 +1291,12 @@ class InternlyHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/extract/file":
+            if not self._require_session():
+                self._send_json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"ok": False, "error": "Please log in or continue as guest."},
+                )
+                return
             file_base64 = payload.get("file_base64")
             filename = clean_text(payload.get("filename"), max_len=200)
             mime_type = clean_text(payload.get("mime_type"), max_len=160)
@@ -1061,6 +1333,12 @@ class InternlyHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/extract/screenshot":
+            if not self._require_session():
+                self._send_json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"ok": False, "error": "Please log in or continue as guest."},
+                )
+                return
             image_b64 = payload.get("image_base64")
             filename = clean_text(payload.get("filename"), max_len=120)
             if not isinstance(image_b64, str) or not image_b64.strip():
@@ -1084,6 +1362,12 @@ class InternlyHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/extract/text":
+            if not self._require_session():
+                self._send_json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"ok": False, "error": "Please log in or continue as guest."},
+                )
+                return
             raw_text = clean_text(payload.get("text"), max_len=9000)
             source_url = clean_text(payload.get("source_url"), max_len=800)
             if not raw_text:
@@ -1101,9 +1385,14 @@ class InternlyHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Endpoint not found."})
             return
 
+        session, error = self._require_user_session()
+        if error:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": error})
+            return
+
         try:
             payload = self._parse_json_body()
-            updated = self._update_application(app_id, payload)
+            updated = self._update_application(app_id, payload, session["user_id"])
         except ValueError as error:
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
             return
@@ -1119,7 +1408,12 @@ class InternlyHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Endpoint not found."})
             return
 
-        deleted = self._delete_application(app_id)
+        session, error = self._require_user_session()
+        if error:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": error})
+            return
+
+        deleted = self._delete_application(app_id, session["user_id"])
         if not deleted:
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Application not found."})
             return
@@ -1127,6 +1421,9 @@ class InternlyHandler(BaseHTTPRequestHandler):
 
     def _serve_static(self, path: str) -> None:
         relative = path.lstrip("/") or "index.html"
+        if relative in {"app.html", "applications.html"} and not self._require_session():
+            self._redirect("/")
+            return
         file_path = (WEB_DIR / relative).resolve()
         try:
             file_path.relative_to(WEB_DIR.resolve())
@@ -1144,12 +1441,62 @@ class InternlyHandler(BaseHTTPRequestHandler):
 
         self._send_file(file_path)
 
-    def _list_applications(self, status_filter: str | None) -> list[dict[str, Any]]:
-        query = f"SELECT {', '.join(APPLICATION_COLUMNS)} FROM applications"
-        params: list[Any] = []
+    def _register_user(self, username: str, password: str) -> dict[str, Any]:
+        salt_hex, hash_hex, iterations = hash_password(password)
+        now = utc_now_iso()
+        conn = open_db()
+        try:
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO users (username, password_salt, password_hash, password_iterations, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (username, salt_hex, hash_hex, iterations, now),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ValueError("Username already exists.") from error
+            conn.commit()
+            row = conn.execute(
+                "SELECT id, username FROM users WHERE id = ?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            raise ValueError("Failed to create user.")
+        return {"id": row["id"], "username": row["username"]}
+
+    def _authenticate_user(self, username: str, password: str) -> dict[str, Any] | None:
+        conn = open_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT id, username, password_salt, password_hash, password_iterations
+                FROM users
+                WHERE username = ?
+                """,
+                (username,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        if not verify_password(
+            password,
+            salt_hex=row["password_salt"],
+            expected_hash_hex=row["password_hash"],
+            iterations=int(row["password_iterations"]),
+        ):
+            return None
+        return {"id": row["id"], "username": row["username"]}
+
+    def _list_applications(self, user_id: int, status_filter: str | None) -> list[dict[str, Any]]:
+        query = f"SELECT {', '.join(APPLICATION_COLUMNS)} FROM applications WHERE user_id = ?"
+        params: list[Any] = [user_id]
         if status_filter:
             normalized = ensure_status(status_filter)
-            query += " WHERE status = ?"
+            query += " AND status = ?"
             params.append(normalized)
         query += " ORDER BY updated_at DESC, id DESC"
 
@@ -1160,18 +1507,18 @@ class InternlyHandler(BaseHTTPRequestHandler):
             conn.close()
         return [row_to_dict(row) for row in rows]
 
-    def _get_application(self, app_id: int) -> dict[str, Any] | None:
+    def _get_application(self, app_id: int, user_id: int) -> dict[str, Any] | None:
         conn = open_db()
         try:
             row = conn.execute(
-                f"SELECT {', '.join(APPLICATION_COLUMNS)} FROM applications WHERE id = ?",
-                (app_id,),
+                f"SELECT {', '.join(APPLICATION_COLUMNS)} FROM applications WHERE id = ? AND user_id = ?",
+                (app_id, user_id),
             ).fetchone()
         finally:
             conn.close()
         return row_to_dict(row) if row else None
 
-    def _create_application(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _create_application(self, payload: dict[str, Any], user_id: int) -> dict[str, Any]:
         company = clean_text(payload.get("company"), max_len=200)
         role = clean_text(payload.get("role"), max_len=200)
         if not company or not role:
@@ -1203,6 +1550,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
             clean_text(payload.get("notes"), max_len=4000),
             now,
             now,
+            user_id,
         )
 
         conn = open_db()
@@ -1211,22 +1559,24 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 """
                 INSERT INTO applications (
                     company, role, location, job_type, deadline, status,
-                    source_url, compensation, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_url, compensation, notes, created_at, updated_at, user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
             conn.commit()
             new_id = cursor.lastrowid
             row = conn.execute(
-                f"SELECT {', '.join(APPLICATION_COLUMNS)} FROM applications WHERE id = ?",
-                (new_id,),
+                f"SELECT {', '.join(APPLICATION_COLUMNS)} FROM applications WHERE id = ? AND user_id = ?",
+                (new_id, user_id),
             ).fetchone()
         finally:
             conn.close()
         return row_to_dict(row)
 
-    def _update_application(self, app_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+    def _update_application(
+        self, app_id: int, payload: dict[str, Any], user_id: int
+    ) -> dict[str, Any] | None:
         allowed_fields = {
             "company": lambda value: clean_text(value, max_len=200),
             "role": lambda value: clean_text(value, max_len=200),
@@ -1269,24 +1619,27 @@ class InternlyHandler(BaseHTTPRequestHandler):
         conn = open_db()
         try:
             cursor = conn.execute(
-                f"UPDATE applications SET {set_clause} WHERE id = ?",
-                params,
+                f"UPDATE applications SET {set_clause} WHERE id = ? AND user_id = ?",
+                params + [user_id],
             )
             conn.commit()
             if cursor.rowcount == 0:
                 return None
             row = conn.execute(
-                f"SELECT {', '.join(APPLICATION_COLUMNS)} FROM applications WHERE id = ?",
-                (app_id,),
+                f"SELECT {', '.join(APPLICATION_COLUMNS)} FROM applications WHERE id = ? AND user_id = ?",
+                (app_id, user_id),
             ).fetchone()
         finally:
             conn.close()
         return row_to_dict(row) if row else None
 
-    def _delete_application(self, app_id: int) -> bool:
+    def _delete_application(self, app_id: int, user_id: int) -> bool:
         conn = open_db()
         try:
-            cursor = conn.execute("DELETE FROM applications WHERE id = ?", (app_id,))
+            cursor = conn.execute(
+                "DELETE FROM applications WHERE id = ? AND user_id = ?",
+                (app_id, user_id),
+            )
             conn.commit()
             return cursor.rowcount > 0
         finally:

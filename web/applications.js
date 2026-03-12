@@ -22,9 +22,17 @@ const appsUpdatedAt = document.getElementById("appsUpdatedAt");
 const themeToggle = document.getElementById("themeToggle");
 const themeSwitch = document.getElementById("themeSwitch");
 const themeSwitchLabel = document.getElementById("themeSwitchLabel");
+const sessionChip = document.getElementById("sessionChip");
+const logoutBtn = document.getElementById("logoutBtn");
 const toast = document.getElementById("toast");
 
+const GUEST_APPS_KEY = "internly-guest-applications";
 let appsCache = [];
+let sessionState = {
+  authenticated: false,
+  is_guest: false,
+  username: null,
+};
 
 function showToast(message, isError = false) {
   if (!toast) return;
@@ -131,6 +139,65 @@ async function api(path, options = {}) {
     throw new Error(data.error || `Request failed (${response.status})`);
   }
   return data;
+}
+
+async function getSession() {
+  const response = await fetch("/api/session");
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `Session check failed (${response.status})`);
+  }
+  return data;
+}
+
+function loadGuestApplications() {
+  try {
+    const raw = window.sessionStorage.getItem(GUEST_APPS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveGuestApplications(items) {
+  try {
+    window.sessionStorage.setItem(GUEST_APPS_KEY, JSON.stringify(items));
+  } catch (error) {
+    /* no-op */
+  }
+}
+
+function updateSessionUI() {
+  if (sessionChip) {
+    if (!sessionState.authenticated) {
+      sessionChip.textContent = "Session required";
+    } else if (sessionState.is_guest) {
+      sessionChip.textContent = "Guest mode (not saved)";
+      sessionChip.classList.add("guest");
+    } else {
+      sessionChip.textContent = `Signed in: ${sessionState.username || "user"}`;
+      sessionChip.classList.remove("guest");
+    }
+  }
+  if (logoutBtn) {
+    logoutBtn.textContent = sessionState.is_guest ? "Exit Guest" : "Sign Out";
+  }
+}
+
+async function logoutAndReturnHome() {
+  try {
+    await api("/api/auth/logout", { method: "POST", body: "{}" });
+  } catch (error) {
+    /* no-op */
+  }
+  try {
+    window.sessionStorage.removeItem(GUEST_APPS_KEY);
+  } catch (error) {
+    /* no-op */
+  }
+  window.location.href = "/";
 }
 
 function resolveInitialTheme() {
@@ -302,6 +369,14 @@ function renderAll() {
 }
 
 async function loadApplications() {
+  if (sessionState.is_guest) {
+    appsCache = loadGuestApplications().map((item) => ({
+      ...item,
+      status: normalizeStatusForUI(item.status),
+    }));
+    renderAll();
+    return;
+  }
   const data = await api("/api/applications");
   appsCache = (data.items || []).map((item) => ({
     ...item,
@@ -321,6 +396,18 @@ appsTbody.addEventListener("change", async (event) => {
   if (!id) return;
 
   try {
+    if (sessionState.is_guest) {
+      const index = appsCache.findIndex((item) => String(item.id) === id);
+      if (index >= 0) {
+        appsCache[index].status = normalizeStatusForUI(target.value);
+        appsCache[index].updated_at = new Date().toISOString();
+      }
+      saveGuestApplications(appsCache);
+      renderAll();
+      showToast("Guest status updated (temporary).");
+      return;
+    }
+
     await api(`/api/applications/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ status: target.value }),
@@ -348,6 +435,14 @@ appsTbody.addEventListener("click", async (event) => {
   if (!confirmed) return;
 
   try {
+    if (sessionState.is_guest) {
+      appsCache = appsCache.filter((item) => String(item.id) !== id);
+      saveGuestApplications(appsCache);
+      renderAll();
+      showToast("Guest application removed.");
+      return;
+    }
+
     await api(`/api/applications/${id}`, { method: "DELETE" });
     appsCache = appsCache.filter((item) => String(item.id) !== id);
     renderAll();
@@ -361,8 +456,21 @@ async function init() {
   initThemeToggle();
   populateStatusFilters();
   try {
+    sessionState = await getSession();
+    if (!sessionState.authenticated) {
+      window.location.href = "/";
+      return;
+    }
+    updateSessionUI();
+    if (logoutBtn) {
+      logoutBtn.addEventListener("click", logoutAndReturnHome);
+    }
     await loadApplications();
   } catch (error) {
+    if (!sessionState.authenticated) {
+      window.location.href = "/";
+      return;
+    }
     showToast(error.message, true);
   }
 }
