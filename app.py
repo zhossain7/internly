@@ -78,6 +78,12 @@ GEMINI_TIMEOUT_SECONDS = 45
 GROQ_API_KEY = (os.environ.get("GROQ_API_KEY") or "").strip()
 GROQ_MODEL = (os.environ.get("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
 GROQ_TIMEOUT_SECONDS = 45
+OLLAMA_BASE_URL = (os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip()
+OLLAMA_MODEL = (os.environ.get("OLLAMA_MODEL") or "granite3.2-vision").strip()
+try:
+    OLLAMA_TIMEOUT_SECONDS = max(10, int((os.environ.get("OLLAMA_TIMEOUT_SECONDS") or "60").strip()))
+except ValueError:
+    OLLAMA_TIMEOUT_SECONDS = 60
 
 ALLOWED_STATUSES = {
     "wishlist",
@@ -462,10 +468,12 @@ def normalize_extraction_mode(value: Any | None) -> str:
     mode_aliases = {
         "ai": "auto",
         "default": "local",
+        "ollama": "granite",
+        "granite3.2-vision": "granite",
     }
     mode = mode_aliases.get(mode, mode)
-    if mode not in {"local", "gemini", "groq", "auto"}:
-        raise ValueError("Invalid extraction_mode. Use one of: local, gemini, groq, auto.")
+    if mode not in {"local", "gemini", "groq", "granite", "auto"}:
+        raise ValueError("Invalid extraction_mode. Use one of: local, gemini, groq, granite, auto.")
     return mode
 
 
@@ -520,6 +528,18 @@ def extract_text_from_openai_chat_response(payload: dict[str, Any]) -> str | Non
         message = choice.get("message")
         if not isinstance(message, dict):
             continue
+        text = clean_text(message.get("content"), max_len=40000)
+        if text:
+            return text
+    return None
+
+
+def extract_text_from_ollama_generate_response(payload: dict[str, Any]) -> str | None:
+    text = clean_text(payload.get("response"), max_len=40000)
+    if text:
+        return text
+    message = payload.get("message")
+    if isinstance(message, dict):
         text = clean_text(message.get("content"), max_len=40000)
         if text:
             return text
@@ -767,6 +787,87 @@ def extract_with_groq_from_text(text: str, *, source_url: str | None = None) -> 
         "source_type": "groq",
         "provider": "groq",
         "model": GROQ_MODEL,
+        "text_preview": cleaned_text[:900],
+    }
+    return extracted
+
+
+def call_ollama_generate(prompt: str, *, image_bytes: bytes | None = None) -> str:
+    base_url = clean_text(OLLAMA_BASE_URL, max_len=300)
+    if not base_url:
+        raise RuntimeError("Granite mode requires OLLAMA_BASE_URL.")
+    model_name = clean_text(OLLAMA_MODEL, max_len=200)
+    if not model_name:
+        raise RuntimeError("Granite mode requires OLLAMA_MODEL.")
+
+    request_payload: dict[str, Any] = {
+        "model": model_name,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": 0.1},
+    }
+    if image_bytes:
+        request_payload["images"] = [base64.b64encode(image_bytes).decode("ascii")]
+
+    request = Request(
+        f"{base_url.rstrip('/')}/api/generate",
+        data=json.dumps(request_payload, ensure_ascii=True).encode("utf-8"),
+        headers={"Content-Type": "application/json; charset=utf-8", "Accept": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=OLLAMA_TIMEOUT_SECONDS) as response:
+            response_bytes = response.read()
+    except HTTPError as error:
+        detail = clean_text(error.read().decode("utf-8", errors="ignore"), max_len=280)
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Granite extraction failed ({error.code}){suffix}") from error
+    except URLError as error:
+        raise RuntimeError(f"Granite extraction network error: {error.reason}") from error
+    except Exception as error:
+        raise RuntimeError(f"Granite extraction failed: {error}") from error
+
+    try:
+        response_payload = json.loads(response_bytes.decode("utf-8"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Granite returned an invalid API response.") from error
+
+    response_text = extract_text_from_ollama_generate_response(response_payload)
+    if not response_text:
+        raise RuntimeError("Granite returned an empty extraction response.")
+    return response_text
+
+
+def extract_with_granite_from_text(text: str, *, source_url: str | None = None) -> dict[str, Any]:
+    cleaned_text = clean_text(text, max_len=26000)
+    if not cleaned_text:
+        raise RuntimeError("No readable text was found for Granite extraction.")
+
+    source_line = source_url if source_url and is_valid_url(source_url) else "unknown"
+    prompt = (
+        "Extract job application fields from the text below.\n"
+        "Return only JSON with keys:\n"
+        "company, role, location, job_type, deadline, deadline_time, notes, source_url\n"
+        "Rules:\n"
+        "- deadline must use YYYY-MM-DD when available, else null.\n"
+        "- deadline_time must use HH:MM (24-hour) when available, else null.\n"
+        "- Keep notes concise and useful.\n"
+        "- Use null for unknown values.\n\n"
+        f"Source URL: {source_line}\n\n"
+        f"Job posting text:\n{cleaned_text}"
+    )
+
+    response_text = call_ollama_generate(prompt)
+    extracted_object = parse_json_object_from_text(response_text)
+    if not extracted_object:
+        raise RuntimeError("Granite did not return parseable JSON fields.")
+
+    extracted = normalize_gemini_extracted_fields(extracted_object, source_url=source_url)
+    extracted["raw"] = {
+        "source_type": "granite",
+        "provider": "ollama",
+        "model": OLLAMA_MODEL,
         "text_preview": cleaned_text[:900],
     }
     return extracted
@@ -1958,6 +2059,69 @@ def extract_with_groq_from_file_bytes(
     return extracted
 
 
+def extract_with_granite_from_file_bytes(
+    file_bytes: bytes,
+    *,
+    file_kind: str,
+    filename: str | None = None,
+    mime_type: str | None = None,
+    source_url: str | None = None,
+    content_type: str | None = None,
+) -> dict[str, Any]:
+    normalized_mime = extract_mime_type(mime_type) or extract_mime_type(content_type)
+    if file_kind == "image":
+        source_line = source_url if source_url and is_valid_url(source_url) else "unknown"
+        prompt = (
+            "Extract job application fields from this image.\n"
+            "Return only JSON with keys:\n"
+            "company, role, location, job_type, deadline, deadline_time, notes, source_url\n"
+            "Rules:\n"
+            "- deadline must use YYYY-MM-DD when available, else null.\n"
+            "- deadline_time must use HH:MM (24-hour) when available, else null.\n"
+            "- Keep notes concise and useful.\n"
+            "- Use null for unknown values.\n\n"
+            f"Source URL: {source_line}"
+        )
+        response_text = call_ollama_generate(prompt, image_bytes=file_bytes)
+        extracted_object = parse_json_object_from_text(response_text)
+        if not extracted_object:
+            raise RuntimeError("Granite did not return parseable JSON fields.")
+        extracted = normalize_gemini_extracted_fields(extracted_object, source_url=source_url)
+        extracted["raw"] = {
+            "source_type": "granite",
+            "provider": "ollama",
+            "model": OLLAMA_MODEL,
+            "input_source_type": "image",
+            "content_type": normalized_mime,
+        }
+        return extracted
+
+    seed_text, seed_meta = extract_text_for_llm_from_file_bytes(
+        file_bytes,
+        file_kind=file_kind,
+        filename=filename,
+        mime_type=mime_type,
+        source_url=source_url,
+        content_type=content_type,
+    )
+    extracted = extract_with_granite_from_text(seed_text, source_url=source_url)
+    extracted["raw"] = {
+        "source_type": "granite",
+        "provider": "ollama",
+        "model": OLLAMA_MODEL,
+        "input_source_type": seed_meta.get("source_type"),
+        "content_type": seed_meta.get("content_type"),
+        "text_preview": clean_text(seed_text, max_len=900) or "",
+    }
+    if isinstance(seed_meta.get("methods"), list):
+        extracted["raw"]["methods"] = seed_meta["methods"]
+    if seed_meta.get("title"):
+        extracted["raw"]["title"] = seed_meta["title"]
+    if seed_meta.get("meta_description"):
+        extracted["raw"]["meta_description"] = seed_meta["meta_description"]
+    return extracted
+
+
 def extract_from_file_bytes(
     file_bytes: bytes,
     *,
@@ -2018,6 +2182,16 @@ def extract_from_file_bytes(
         except RuntimeError:
             if mode == "groq":
                 raise
+
+    if mode == "granite":
+        return extract_with_granite_from_file_bytes(
+            file_bytes,
+            file_kind=file_kind,
+            filename=filename,
+            mime_type=mime_type,
+            source_url=source_url,
+            content_type=content_type,
+        )
 
     if file_kind == "html":
         html = decode_text_bytes(file_bytes)
@@ -2169,6 +2343,8 @@ def extract_from_text_with_mode(
     extraction_mode: str | None = None,
 ) -> dict[str, Any]:
     mode = normalize_extraction_mode(extraction_mode)
+    if mode == "granite":
+        return extract_with_granite_from_text(raw_text, source_url=source_url)
     if mode in {"groq", "auto"}:
         try:
             return extract_with_groq_from_text(raw_text, source_url=source_url)
@@ -2400,7 +2576,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 return
             mode = (
                 DEFAULT_EXTRACTION_MODE
-                if DEFAULT_EXTRACTION_MODE in {"local", "gemini", "groq", "auto"}
+                if DEFAULT_EXTRACTION_MODE in {"local", "gemini", "groq", "granite", "auto"}
                 else "local"
             )
             self._send_json(
@@ -2413,6 +2589,8 @@ class InternlyHandler(BaseHTTPRequestHandler):
                     "gemini_model": GEMINI_MODEL,
                     "groq_configured": bool(GROQ_API_KEY),
                     "groq_model": GROQ_MODEL,
+                    "ollama_base_url": OLLAMA_BASE_URL,
+                    "ollama_model": OLLAMA_MODEL,
                 },
             )
             return

@@ -51,14 +51,18 @@ Internly now supports extraction modes:
 - `local`: current local parser + OCR/PDF tooling.
 - `gemini`: force Gemini API for PDF/image extraction.
 - `groq`: force Groq API extraction from extracted document text.
+- `granite`: force local Ollama extraction (default model: `granite3.2-vision`).
 - `auto`: use Gemini for PDF/image when configured, otherwise Groq when configured, otherwise local.
 
 Server env vars:
 
-- `EXTRACTION_MODE` (`local`, `gemini`, `groq`, `auto`; default `local`)
+- `EXTRACTION_MODE` (`local`, `gemini`, `groq`, `granite`, `auto`; default `local`)
 - `GEMINI_API_KEY` (required for `gemini`)
 - `GROQ_API_KEY` (required for `groq`)
 - `GROQ_MODEL` (optional, defaults to `llama-3.3-70b-versatile`)
+- `OLLAMA_BASE_URL` (optional, defaults to `http://127.0.0.1:11434`)
+- `OLLAMA_MODEL` (optional, defaults to `granite3.2-vision`)
+- `OLLAMA_TIMEOUT_SECONDS` (optional, defaults to `60`)
 
 Gemini model is pinned to `gemini-2.5-flash` (free-tier friendly).
 
@@ -67,6 +71,8 @@ You can set these in a local `.env` file in the project root:
 ```env
 GEMINI_API_KEY=your_key_here
 GROQ_API_KEY=your_key_here
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=granite3.2-vision
 EXTRACTION_MODE=auto
 ```
 

@@ -253,6 +253,7 @@ function formatExtractionModeLabel(mode) {
   const normalized = String(mode || "local").toLowerCase();
   if (normalized === "gemini") return "Gemini 2.5 Flash";
   if (normalized === "groq") return "Groq";
+  if (normalized === "granite") return "Granite (Ollama Local)";
   if (normalized === "auto") return "Auto";
   return "Local OCR";
 }
