@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qs, urlparse
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -30,13 +31,44 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "internly.db"
 WEB_DIR = BASE_DIR / "web"
 
+
+def load_local_env_file(env_path: Path) -> None:
+    if not env_path.is_file():
+        return
+    try:
+        content = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env_key = key.strip()
+        env_value = value.strip().strip('"').strip("'")
+        if env_key and env_key not in os.environ:
+            os.environ[env_key] = env_value
+
+
+load_local_env_file(BASE_DIR / ".env")
+
 MAX_BODY_BYTES = 30 * 1024 * 1024
 MAX_HTML_BYTES = 1_200_000
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_OCR_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_PDF_OCR_PAGES = 5
+MAX_GEMINI_INLINE_BYTES = 18 * 1024 * 1024
 PASSWORD_HASH_ITERATIONS = 260_000
 SESSION_COOKIE_NAME = "internly_session"
+DEFAULT_EXTRACTION_MODE = (os.environ.get("EXTRACTION_MODE") or "local").strip().lower()
+GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_TIMEOUT_SECONDS = 45
 
 ALLOWED_STATUSES = {
     "wishlist",
@@ -57,6 +89,7 @@ APPLICATION_COLUMNS = (
     "location",
     "job_type",
     "deadline",
+    "deadline_time",
     "status",
     "source_url",
     "compensation",
@@ -72,6 +105,7 @@ EXCEL_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("location", "Location"),
     ("job_type", "Type"),
     ("deadline", "Deadline (YYYY-MM-DD)"),
+    ("deadline_time", "Time (HH:MM)"),
     ("status", "Status"),
     ("source_url", "Source URL"),
     ("compensation", "Compensation"),
@@ -91,7 +125,18 @@ EXCEL_STATUS_ORDER = (
     "ghosted",
 )
 
-EXCEL_COLUMN_WIDTHS = (9, 24, 30, 18, 16, 20, 16, 46, 18, 58, 24, 24)
+EXCEL_STATUS_COLUMN_INDEX = next(
+    index
+    for index, (key, _label) in enumerate(EXCEL_EXPORT_COLUMNS, start=1)
+    if key == "status"
+)
+EXCEL_NOTES_COLUMN_INDEX = next(
+    index
+    for index, (key, _label) in enumerate(EXCEL_EXPORT_COLUMNS, start=1)
+    if key == "notes"
+)
+
+EXCEL_COLUMN_WIDTHS = (9, 24, 30, 18, 16, 20, 14, 16, 46, 18, 58, 24, 24)
 
 SESSION_STORE: dict[str, dict[str, Any]] = {}
 SESSION_STORE_LOCK = threading.Lock()
@@ -156,6 +201,7 @@ def ensure_status(value: Any) -> str:
 
 def parse_any_date(value: str) -> str | None:
     text = normalize_space(value).replace(",", "")
+    text = re.sub(r"\b(\d{1,2})(?:st|nd|rd|th)\b", r"\1", text, flags=re.IGNORECASE)
     if not text:
         return None
 
@@ -187,8 +233,8 @@ def extract_date_from_text(value: str) -> str | None:
         r"\b\d{4}-\d{2}-\d{2}\b",
         r"\b\d{1,2}/\d{1,2}/\d{4}\b",
         r"\b\d{1,2}-\d{1,2}-\d{4}\b",
-        r"\b(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{1,2},?\s+\d{4}\b",
-        r"\b\d{1,2}\s+(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{4}\b",
+        r"\b(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b",
+        r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{4}\b",
     ]
 
     for pattern in patterns:
@@ -198,6 +244,38 @@ def extract_date_from_text(value: str) -> str | None:
         parsed = parse_any_date(match.group(0))
         if parsed:
             return parsed
+    return None
+
+
+def parse_any_time(value: str) -> str | None:
+    text = normalize_space(value).lower().replace(".", ":")
+    text = re.sub(r"\b([ap])\s*m\b", r"\1m", text)
+    if not text:
+        return None
+
+    candidates = [text, text.replace(" ", "")]
+    formats = ("%H:%M", "%I:%M%p", "%I%p")
+    for candidate in candidates:
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+                return parsed.strftime("%H:%M")
+            except ValueError:
+                continue
+    return None
+
+
+def extract_time_from_text(value: str) -> str | None:
+    normalized = normalize_space(value)
+    patterns = [
+        r"\b\d{1,2}(?::\d{2})\s*(?:[AaPp]\.?[Mm]\.?)?\b",
+        r"\b\d{1,2}\s*(?:[AaPp]\.?[Mm]\.?)\b",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, normalized):
+            parsed = parse_any_time(match.group(0))
+            if parsed:
+                return parsed
     return None
 
 
@@ -301,27 +379,270 @@ def decode_text_bytes(file_bytes: bytes) -> str:
     return file_bytes.decode("utf-8", errors="ignore")
 
 
-def resolve_tesseract_command() -> str:
-    custom_path = os.environ.get("TESSERACT_PATH")
-    if custom_path:
-        candidate = Path(custom_path)
-        if candidate.exists():
-            return str(candidate)
-    return "tesseract"
+def normalize_extraction_mode(value: Any | None) -> str:
+    raw_mode = clean_text(value, max_len=24)
+    mode = (raw_mode or DEFAULT_EXTRACTION_MODE or "local").strip().lower()
+    mode_aliases = {
+        "ai": "gemini",
+        "default": "local",
+    }
+    mode = mode_aliases.get(mode, mode)
+    if mode not in {"local", "gemini", "auto"}:
+        raise ValueError("Invalid extraction_mode. Use one of: local, gemini, auto.")
+    return mode
+
+
+def should_use_gemini(mode: str, *, file_kind: str) -> bool:
+    if file_kind not in {"image", "pdf"}:
+        return False
+    if mode == "gemini":
+        return True
+    if mode == "auto":
+        return bool(GEMINI_API_KEY)
+    return False
+
+
+def extract_text_from_gemini_response(payload: dict[str, Any]) -> str | None:
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return None
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content")
+        if not isinstance(content, dict):
+            continue
+        parts = content.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            text = clean_text(part.get("text"), max_len=40000)
+            if text:
+                return text
+    return None
+
+
+def parse_json_object_from_text(raw_text: str) -> dict[str, Any] | None:
+    text = raw_text.strip()
+    if not text:
+        return None
+
+    candidates = [text]
+    fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
+    if fenced_match:
+        candidates.append(fenced_match.group(1).strip())
+    braced_match = re.search(r"\{[\s\S]*\}", text)
+    if braced_match:
+        candidates.append(braced_match.group(0).strip())
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def normalize_gemini_extracted_fields(
+    payload: dict[str, Any], *, source_url: str | None = None
+) -> dict[str, Any]:
+    company = clean_text(payload.get("company"), max_len=200)
+    role = clean_text(payload.get("role"), max_len=200)
+    location = clean_text(payload.get("location"), max_len=200)
+    job_type = clean_text(payload.get("job_type") or payload.get("type"), max_len=80)
+
+    deadline_raw = clean_text(payload.get("deadline"), max_len=80)
+    deadline = parse_any_date(deadline_raw) if deadline_raw else None
+    if deadline_raw and not deadline:
+        deadline = extract_date_from_text(deadline_raw)
+    deadline_time_raw = clean_text(payload.get("deadline_time") or payload.get("time"), max_len=48)
+    deadline_time = parse_any_time(deadline_time_raw) if deadline_time_raw else None
+    if deadline_time_raw and not deadline_time:
+        deadline_time = extract_time_from_text(deadline_time_raw)
+
+    notes_source = clean_text(payload.get("notes"), max_len=2500) or ""
+    notes = clean_notes_text(notes_source) if notes_source else None
+
+    resolved_source_url = clean_text(payload.get("source_url"), max_len=800) or source_url
+    if resolved_source_url and not is_valid_url(resolved_source_url):
+        resolved_source_url = source_url if source_url and is_valid_url(source_url) else None
+
+    seed_for_job_type = " ".join(part for part in [role or "", notes or ""] if part)
+    if not job_type and seed_for_job_type:
+        job_type = guess_job_type(seed_for_job_type)
+
+    return {
+        "company": company,
+        "role": role,
+        "location": location,
+        "job_type": job_type,
+        "deadline": deadline,
+        "deadline_time": deadline_time,
+        "status": "wishlist",
+        "source_url": resolved_source_url,
+        "notes": notes,
+    }
+
+
+def extract_with_gemini_from_file(
+    file_bytes: bytes, *, mime_type: str, source_url: str | None = None
+) -> dict[str, Any]:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("Gemini mode requires GEMINI_API_KEY.")
+    if len(file_bytes) > MAX_GEMINI_INLINE_BYTES:
+        raise RuntimeError(
+            f"File is too large for Gemini inline extraction. Keep it below "
+            f"{MAX_GEMINI_INLINE_BYTES // (1024 * 1024)} MB."
+        )
+
+    prompt_lines = [
+        "Extract job application fields from this document.",
+        "Return JSON only with keys:",
+        "company, role, location, job_type, deadline, deadline_time, notes, source_url",
+        "Rules:",
+        "- deadline must use YYYY-MM-DD when available, else null.",
+        "- deadline_time must use HH:MM (24-hour) when available, else null.",
+        "- Keep notes concise and useful.",
+        "- Use null for unknown values.",
+    ]
+    if source_url:
+        prompt_lines.append(f"Source URL: {source_url}")
+    prompt = "\n".join(prompt_lines)
+
+    request_payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": base64.b64encode(file_bytes).decode("ascii"),
+                        }
+                    },
+                ],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.1,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    endpoint = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}"
+        f":generateContent?key={GEMINI_API_KEY}"
+    )
+    request = Request(
+        endpoint,
+        data=json.dumps(request_payload, ensure_ascii=True).encode("utf-8"),
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=GEMINI_TIMEOUT_SECONDS) as response:
+            response_bytes = response.read()
+    except HTTPError as error:
+        detail = clean_text(error.read().decode("utf-8", errors="ignore"), max_len=280)
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Gemini extraction failed ({error.code}){suffix}") from error
+    except URLError as error:
+        raise RuntimeError(f"Gemini extraction network error: {error.reason}") from error
+    except Exception as error:
+        raise RuntimeError(f"Gemini extraction failed: {error}") from error
+
+    try:
+        response_payload = json.loads(response_bytes.decode("utf-8"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Gemini returned an invalid API response.") from error
+
+    response_text = extract_text_from_gemini_response(response_payload)
+    if not response_text:
+        raise RuntimeError("Gemini returned an empty extraction response.")
+
+    extracted_object = parse_json_object_from_text(response_text)
+    if not extracted_object:
+        raise RuntimeError("Gemini did not return parseable JSON fields.")
+
+    extracted = normalize_gemini_extracted_fields(extracted_object, source_url=source_url)
+    extracted["raw"] = {
+        "source_type": "gemini",
+        "provider": "gemini",
+        "model": GEMINI_MODEL,
+    }
+    return extracted
+
+
+def resolve_tesseract_command() -> str | None:
+    raw_custom_path = clean_text(os.environ.get("TESSERACT_PATH"), max_len=500)
+    if raw_custom_path:
+        custom_path = raw_custom_path.strip().strip('"').strip("'")
+        custom_path = os.path.expanduser(os.path.expandvars(custom_path))
+        resolved_from_path = shutil.which(custom_path)
+        if resolved_from_path:
+            return resolved_from_path
+        custom_candidate = Path(custom_path)
+        if custom_candidate.is_dir():
+            for name in ("tesseract.exe", "tesseract"):
+                nested = custom_candidate / name
+                if nested.is_file():
+                    return str(nested)
+        elif custom_candidate.is_file():
+            return str(custom_candidate)
+
+    discovered = shutil.which("tesseract") or shutil.which("tesseract.exe")
+    if discovered:
+        return discovered
+
+    known_roots = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("LocalAppData"),
+    ]
+    for root in known_roots:
+        if not root:
+            continue
+        base = Path(root)
+        for candidate in (
+            base / "Tesseract-OCR" / "tesseract.exe",
+            base / "Programs" / "Tesseract-OCR" / "tesseract.exe",
+        ):
+            if candidate.is_file():
+                return str(candidate)
+
+    return None
 
 
 def run_tesseract_on_image_path(image_path: Path, *, timeout_seconds: int = 35) -> str:
-    command = [resolve_tesseract_command(), str(image_path), "stdout", "--psm", "6"]
+    tesseract_command = resolve_tesseract_command()
+    if not tesseract_command:
+        raise RuntimeError(
+            "OCR unavailable: couldn't find tesseract.exe. Install the system OCR engine "
+            "(not just a pip package) or set TESSERACT_PATH to the full executable path."
+        )
+    command = [tesseract_command, str(image_path), "stdout", "--psm", "6"]
     try:
         result = subprocess.run(
             command,
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
         )
     except FileNotFoundError as error:
-        raise RuntimeError("OCR unavailable: install 'tesseract' and add it to PATH.") from error
+        raise RuntimeError(
+            "OCR unavailable: couldn't find tesseract.exe. Install the system OCR engine "
+            "(not just a pip package) or set TESSERACT_PATH to the full executable path."
+        ) from error
     except subprocess.CalledProcessError as error:
         message = error.stderr.strip() or "OCR failed."
         raise RuntimeError(message) from error
@@ -345,6 +666,8 @@ def extract_text_from_pdf_file(pdf_path: Path) -> tuple[str, list[str]]:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=45,
             )
             text_output = clean_text(result.stdout, max_len=28000) or ""
@@ -366,10 +689,7 @@ def extract_text_from_pdf_file(pdf_path: Path) -> tuple[str, list[str]]:
         )
 
     tesseract_cmd = resolve_tesseract_command()
-    has_tesseract = Path(tesseract_cmd).exists() if tesseract_cmd != "tesseract" else bool(
-        shutil.which("tesseract")
-    )
-    if not has_tesseract:
+    if not tesseract_cmd:
         if combined_text:
             return (combined_text, methods_used)
         raise RuntimeError(
@@ -446,6 +766,7 @@ def init_db() -> None:
                 location TEXT,
                 job_type TEXT,
                 deadline TEXT,
+                deadline_time TEXT,
                 status TEXT NOT NULL DEFAULT 'wishlist',
                 source_url TEXT,
                 compensation TEXT,
@@ -459,6 +780,8 @@ def init_db() -> None:
         column_names = {row[1] for row in column_rows}
         if "user_id" not in column_names:
             conn.execute("ALTER TABLE applications ADD COLUMN user_id INTEGER;")
+        if "deadline_time" not in column_names:
+            conn.execute("ALTER TABLE applications ADD COLUMN deadline_time TEXT;")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);"
         )
@@ -533,7 +856,7 @@ def build_excel_sheet_xml(
     last_row = max(1, len(rows))
     last_col = excel_col_name(len(EXCEL_EXPORT_COLUMNS))
     dimension_ref = f"A1:{last_col}{last_row}"
-    status_col = excel_col_name(7)
+    status_col = excel_col_name(EXCEL_STATUS_COLUMN_INDEX)
 
     cols_xml = "".join(
         f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>'
@@ -546,7 +869,7 @@ def build_excel_sheet_xml(
         for col_number, value in enumerate(values, start=1):
             ref = f"{excel_col_name(col_number)}{row_number}"
             style_id = 1 if row_number == 1 else 0
-            if row_number > 1 and col_number == 10:
+            if row_number > 1 and col_number == EXCEL_NOTES_COLUMN_INDEX:
                 style_id = 2
             cells.append(build_excel_cell(ref, value, style_id=style_id))
         if row_number == 1:
@@ -693,6 +1016,7 @@ def build_template_excel_bytes() -> bytes:
         "Sydney",
         "Internship",
         "2026-08-31",
+        "17:00",
         "wishlist",
         "https://example.com/jobs/software-engineer-intern",
         "$45/hour",
@@ -816,16 +1140,19 @@ def extract_job_posting_from_ld_json(blobs: list[str]) -> dict[str, Any]:
                 max_len=60,
             )
             deadline = None
+            deadline_time = None
             if raw_deadline:
                 deadline = parse_any_date(raw_deadline.split("T")[0]) or extract_date_from_text(
                     raw_deadline
                 )
+                deadline_time = extract_time_from_text(raw_deadline)
 
             return {
                 "role": title,
                 "company": company_name,
                 "location": location,
                 "deadline": deadline,
+                "deadline_time": deadline_time,
             }
     return {}
 
@@ -844,10 +1171,233 @@ ROLE_HINT_WORDS = {
     "programmer",
 }
 
+COMPANY_SUFFIX_HINTS = {
+    "inc",
+    "llc",
+    "ltd",
+    "limited",
+    "corp",
+    "corporation",
+    "group",
+    "bank",
+    "securities",
+    "capital",
+    "technologies",
+    "technology",
+    "systems",
+    "labs",
+    "holdings",
+    "partners",
+    "ventures",
+    "university",
+}
+
+ROLE_NOISE_MARKERS = {
+    "job summary",
+    "overview",
+    "apply",
+    "read more",
+    "share job",
+    "our programs",
+    "life & culture",
+    "diversity",
+    "videos",
+    "opportunit",
+    "work rights",
+    "accepts international",
+}
+
+COMPANY_NOISE_MARKERS = {
+    "job summary",
+    "overview",
+    "apply",
+    "read more",
+    "share job",
+    "our programs",
+    "life & culture",
+    "diversity",
+    "videos",
+    "locations",
+    "location",
+    "closing date",
+    "closing in",
+    "work rights",
+    "accepts international",
+}
+
+NOTES_NOISE_MARKERS = {
+    "overview",
+    "apply",
+    "save",
+    "follow",
+    "read more",
+    "share job",
+    "our programs",
+    "life & culture",
+    "diversity",
+    "graduate profiles",
+    "videos",
+    "websites",
+}
+
 
 def looks_like_role(text: str) -> bool:
     lowered = text.lower()
     return any(word in lowered for word in ROLE_HINT_WORDS)
+
+
+def clean_ocr_candidate(text: str, *, max_len: int = 240) -> str | None:
+    compact = re.sub(r"[\t|]+", " ", text)
+    compact = re.sub(r"\s+", " ", compact).strip(" -:;,.")
+    return clean_text(compact, max_len=max_len)
+
+
+def clean_notes_text(text: str) -> str | None:
+    kept_lines: list[str] = []
+    seen: set[str] = set()
+
+    for raw_line in text.splitlines():
+        line = clean_ocr_candidate(raw_line, max_len=260)
+        if not line:
+            continue
+
+        lowered = line.lower()
+        if any(marker in lowered for marker in NOTES_NOISE_MARKERS):
+            continue
+
+        line = re.sub(r"[^\w\s.,:/()\-&$%+']", " ", line)
+        line = normalize_space(line)
+        if len(line) < 14:
+            continue
+
+        letters = sum(1 for char in line if char.isalpha())
+        alnum = sum(1 for char in line if char.isalnum())
+        if letters < 6 or alnum < max(8, int(len(line) * 0.45)):
+            continue
+
+        dedupe_key = line.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        kept_lines.append(line)
+
+    if kept_lines:
+        return clean_text(" ".join(kept_lines), max_len=450)
+
+    return None
+
+
+def score_role_candidate(value: str) -> int:
+    lowered = value.lower()
+    score = 0
+    if "internship" in lowered:
+        score += 8
+    if re.search(r"\bintern\b", lowered):
+        score += 6
+    if "graduate" in lowered or re.search(r"\bgrad\b", lowered):
+        score += 4
+    if any(word in lowered for word in ("engineer", "developer", "analyst", "scientist", "quant")):
+        score += 2
+    if re.search(r"\b20\d{2}\s*[-/]\s*20\d{2}\b", value):
+        score += 3
+    if any(marker in lowered for marker in ROLE_NOISE_MARKERS):
+        score -= 6
+    if len(value) < 10 or len(value) > 120:
+        score -= 2
+    return score
+
+
+def infer_role_from_unlabeled_text(lines: list[str], normalized: str) -> str | None:
+    year_range_match = re.search(
+        r"\b20\d{2}\s*[-/]\s*20\d{2}\s+[A-Z][A-Za-z0-9/&,\- ]{4,90}?"
+        r"(?:Internship|Intern|Graduate(?: Program)?|Engineer(?:ing)?)\b",
+        normalized,
+    )
+    if year_range_match:
+        candidate = clean_text(year_range_match.group(0), max_len=200)
+        if candidate:
+            return candidate
+
+    best_candidate = None
+    best_score = 0
+    for line in lines[:60]:
+        candidate = clean_ocr_candidate(line, max_len=220)
+        if not candidate or not looks_like_role(candidate):
+            continue
+        score = score_role_candidate(candidate)
+        if score > best_score:
+            best_candidate = candidate
+            best_score = score
+
+    if best_candidate and best_score >= 4:
+        return best_candidate
+
+    generic_match = re.search(
+        r"\b[A-Z][A-Za-z0-9/&,\- ]{6,90}?(?:Internship|Intern|Graduate(?: Program)?)\b",
+        normalized,
+    )
+    if generic_match:
+        candidate = clean_text(generic_match.group(0), max_len=200)
+        if candidate and score_role_candidate(candidate) >= 4:
+            return candidate
+    return None
+
+
+def looks_like_company(value: str) -> bool:
+    lowered = value.lower()
+    if looks_like_role(value):
+        return False
+    if any(marker in lowered for marker in COMPANY_NOISE_MARKERS):
+        return False
+
+    words = re.findall(r"[A-Za-z][A-Za-z&\.-]*", value)
+    if not words or len(words) > 6:
+        return False
+
+    if any(word.lower() in COMPANY_SUFFIX_HINTS for word in words):
+        return True
+
+    title_count = sum(1 for word in words if word[0].isupper())
+    return len(words) >= 2 and title_count >= max(2, len(words) - 1)
+
+
+def infer_company_from_unlabeled_text(lines: list[str], normalized: str) -> str | None:
+    suffix_pattern = (
+        r"\b([A-Z][A-Za-z&\.-]+(?:\s+[A-Z][A-Za-z&\.-]+){0,3}\s+"
+        r"(?:Inc|LLC|Ltd|Limited|Corp|Corporation|Group|Bank|Securities|Capital|"
+        r"Technologies|Technology|Systems|Labs|Holdings|Partners|Ventures|University))\b"
+    )
+    suffix_match = re.search(suffix_pattern, normalized)
+    if suffix_match:
+        candidate = clean_text(suffix_match.group(1), max_len=200)
+        if candidate:
+            return candidate
+
+    best_candidate = None
+    best_score = 0
+    for line in lines[:60]:
+        candidate = clean_ocr_candidate(line, max_len=220)
+        if not candidate:
+            continue
+        primary = clean_text(candidate.split(":", 1)[0], max_len=180) or candidate
+        if not looks_like_company(primary):
+            continue
+
+        words = re.findall(r"[A-Za-z][A-Za-z&\.-]*", primary)
+        score = 1
+        if any(word.lower() in COMPANY_SUFFIX_HINTS for word in words):
+            score += 4
+        if 2 <= len(words) <= 4:
+            score += 2
+        if any(char.isdigit() for char in primary):
+            score -= 2
+        if score > best_score:
+            best_candidate = primary
+            best_score = score
+
+    if best_candidate and best_score >= 2:
+        return best_candidate
+    return None
 
 
 def infer_role_company_from_title(title: str) -> tuple[str | None, str | None]:
@@ -925,7 +1475,7 @@ def extract_from_job_text(text: str, *, source_url: str | None = None) -> dict[s
     location = extract_labeled_field(
         lines,
         [
-            r"(?:location|based in)\s*[:\-]\s*(.+)",
+            r"(?:location|locations|based in)\s*[:\-]\s*(.+)",
             r"(?:remote|hybrid|onsite|on-site)\b.*",
         ],
     )
@@ -936,6 +1486,33 @@ def extract_from_job_text(text: str, *, source_url: str | None = None) -> dict[s
         ],
     )
     deadline = extract_date_from_text(raw_deadline or normalized) if (raw_deadline or normalized) else None
+    raw_deadline_time = extract_labeled_field(
+        lines,
+        [
+            r"(?:deadline time|closing time|time)\s*[:\-]\s*(.+)",
+            r"(?:applications close at|apply by)\s*[:\-]\s*(.+)",
+        ],
+    )
+    deadline_time = None
+    if raw_deadline:
+        deadline_time = extract_time_from_text(raw_deadline)
+    if not deadline_time and raw_deadline_time:
+        deadline_time = parse_any_time(raw_deadline_time) or extract_time_from_text(
+            raw_deadline_time
+        )
+
+    if not role:
+        role = infer_role_from_unlabeled_text(lines, normalized)
+    if not company:
+        company = infer_company_from_unlabeled_text(lines, normalized)
+
+    if not location:
+        for index, line in enumerate(lines[:-1]):
+            if re.search(r"\blocations?\b\s*[:\-]?\s*$", line, re.IGNORECASE):
+                maybe_location = clean_text(lines[index + 1], max_len=160)
+                if maybe_location and re.fullmatch(r"[A-Za-z][A-Za-z .,'-]{1,80}", maybe_location):
+                    location = maybe_location
+                    break
 
     if not role or not company:
         fallback_title_line = next((line for line in lines[:8] if len(line) > 12), "")
@@ -949,6 +1526,7 @@ def extract_from_job_text(text: str, *, source_url: str | None = None) -> dict[s
             company = domain.replace("www.", "").split(".")[0].capitalize()
 
     job_type = guess_job_type(normalized)
+    notes = clean_notes_text(text)
 
     return {
         "company": company,
@@ -956,9 +1534,10 @@ def extract_from_job_text(text: str, *, source_url: str | None = None) -> dict[s
         "location": location,
         "job_type": job_type,
         "deadline": deadline,
+        "deadline_time": deadline_time,
         "status": "wishlist",
         "source_url": source_url,
-        "notes": clean_text(normalized[:450], max_len=450),
+        "notes": notes,
     }
 
 
@@ -1037,7 +1616,9 @@ def extract_from_file_bytes(
     mime_type: str | None = None,
     source_url: str | None = None,
     content_type: str | None = None,
+    extraction_mode: str | None = None,
 ) -> dict[str, Any]:
+    mode = normalize_extraction_mode(extraction_mode)
     file_kind = detect_file_kind(
         file_bytes,
         filename=filename,
@@ -1045,6 +1626,34 @@ def extract_from_file_bytes(
         content_type=content_type,
     )
     normalized_mime = extract_mime_type(mime_type) or extract_mime_type(content_type)
+
+    if should_use_gemini(mode, file_kind=file_kind):
+        gemini_mime = normalized_mime
+        if not gemini_mime:
+            if file_kind == "pdf":
+                gemini_mime = "application/pdf"
+            else:
+                suffix = Path(filename or "").suffix.lower()
+                image_mime_map = {
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".webp": "image/webp",
+                    ".gif": "image/gif",
+                    ".bmp": "image/bmp",
+                    ".tif": "image/tiff",
+                    ".tiff": "image/tiff",
+                }
+                gemini_mime = image_mime_map.get(suffix, "image/png")
+        try:
+            return extract_with_gemini_from_file(
+                file_bytes,
+                mime_type=gemini_mime,
+                source_url=source_url,
+            )
+        except RuntimeError:
+            if mode == "gemini":
+                raise
 
     if file_kind == "html":
         html = decode_text_bytes(file_bytes)
@@ -1121,6 +1730,7 @@ def extract_from_file_b64(
     mime_type: str | None = None,
     source_url: str | None = None,
     require_image: bool = False,
+    extraction_mode: str | None = None,
 ) -> dict[str, Any]:
     file_bytes, data_url_mime = decode_base64_payload(file_b64, max_size_bytes=MAX_UPLOAD_BYTES)
     merged_mime = extract_mime_type(mime_type) or data_url_mime
@@ -1135,10 +1745,11 @@ def extract_from_file_b64(
         filename=filename,
         mime_type=merged_mime,
         source_url=source_url,
+        extraction_mode=extraction_mode,
     )
 
 
-def fetch_and_extract_from_link(url: str) -> dict[str, Any]:
+def fetch_and_extract_from_link(url: str, *, extraction_mode: str | None = None) -> dict[str, Any]:
     request = Request(
         url,
         headers={
@@ -1165,12 +1776,23 @@ def fetch_and_extract_from_link(url: str) -> dict[str, Any]:
         mime_type=declared_mime,
         source_url=url,
         content_type=content_type,
+        extraction_mode=extraction_mode,
     )
 
 
-def extract_from_screenshot_b64(image_b64: str, filename: str | None = None) -> dict[str, Any]:
+def extract_from_screenshot_b64(
+    image_b64: str,
+    filename: str | None = None,
+    *,
+    extraction_mode: str | None = None,
+) -> dict[str, Any]:
     try:
-        return extract_from_file_b64(image_b64, filename=filename, require_image=True)
+        return extract_from_file_b64(
+            image_b64,
+            filename=filename,
+            require_image=True,
+            extraction_mode=extraction_mode,
+        )
     except ValueError as error:
         message = str(error).replace("file_base64", "image_base64")
         raise ValueError(message) from error
@@ -1343,7 +1965,17 @@ class InternlyHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/health":
-            self._send_json(HTTPStatus.OK, {"ok": True, "time": utc_now_iso()})
+            mode = DEFAULT_EXTRACTION_MODE if DEFAULT_EXTRACTION_MODE in {"local", "gemini", "auto"} else "local"
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "time": utc_now_iso(),
+                    "extraction_mode_default": mode,
+                    "gemini_configured": bool(GEMINI_API_KEY),
+                    "gemini_model": GEMINI_MODEL,
+                },
+            )
             return
 
         if path == "/api/session":
@@ -1592,6 +2224,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 )
                 return
             url = clean_text(payload.get("url"), max_len=800)
+            extraction_mode = clean_text(payload.get("extraction_mode"), max_len=24)
             if not url or not is_valid_url(url):
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
@@ -1599,7 +2232,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 )
                 return
             try:
-                extracted = fetch_and_extract_from_link(url)
+                extracted = fetch_and_extract_from_link(url, extraction_mode=extraction_mode)
             except ValueError as error:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
@@ -1626,6 +2259,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
             filename = clean_text(payload.get("filename"), max_len=200)
             mime_type = clean_text(payload.get("mime_type"), max_len=160)
             source_url = clean_text(payload.get("source_url"), max_len=800)
+            extraction_mode = clean_text(payload.get("extraction_mode"), max_len=24)
             if source_url and not is_valid_url(source_url):
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
@@ -1650,6 +2284,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
                     filename=filename,
                     mime_type=mime_type,
                     source_url=source_url,
+                    extraction_mode=extraction_mode,
                 )
             except (ValueError, RuntimeError) as error:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
@@ -1666,6 +2301,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 return
             image_b64 = payload.get("image_base64")
             filename = clean_text(payload.get("filename"), max_len=120)
+            extraction_mode = clean_text(payload.get("extraction_mode"), max_len=24)
             if not isinstance(image_b64, str) or not image_b64.strip():
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
@@ -1679,7 +2315,11 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 )
                 return
             try:
-                extracted = extract_from_screenshot_b64(image_b64, filename=filename)
+                extracted = extract_from_screenshot_b64(
+                    image_b64,
+                    filename=filename,
+                    extraction_mode=extraction_mode,
+                )
             except (ValueError, RuntimeError) as error:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
                 return
@@ -1867,6 +2507,14 @@ class InternlyHandler(BaseHTTPRequestHandler):
             deadline = extract_date_from_text(deadline_raw)
         if deadline_raw and not deadline:
             raise ValueError("`deadline` must be a valid date (e.g. 2026-04-15).")
+        deadline_time_raw = clean_text(
+            payload.get("deadline_time") or payload.get("time"), max_len=32
+        )
+        deadline_time = parse_any_time(deadline_time_raw) if deadline_time_raw else None
+        if deadline_time_raw and not deadline_time:
+            deadline_time = extract_time_from_text(deadline_time_raw)
+        if deadline_time_raw and not deadline_time:
+            raise ValueError("`deadline_time` must be a valid time (e.g. 17:30 or 5:30 PM).")
 
         status = ensure_status(payload.get("status"))
         now = utc_now_iso()
@@ -1877,6 +2525,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
             clean_text(payload.get("location"), max_len=200),
             clean_text(payload.get("job_type"), max_len=80),
             deadline,
+            deadline_time,
             status,
             source_url,
             clean_text(payload.get("compensation"), max_len=120),
@@ -1891,9 +2540,9 @@ class InternlyHandler(BaseHTTPRequestHandler):
             cursor = conn.execute(
                 """
                 INSERT INTO applications (
-                    company, role, location, job_type, deadline, status,
+                    company, role, location, job_type, deadline, deadline_time, status,
                     source_url, compensation, notes, created_at, updated_at, user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -1910,6 +2559,9 @@ class InternlyHandler(BaseHTTPRequestHandler):
     def _update_application(
         self, app_id: int, payload: dict[str, Any], user_id: int
     ) -> dict[str, Any] | None:
+        if "time" in payload and "deadline_time" not in payload:
+            payload = {**payload, "deadline_time": payload.get("time")}
+
         allowed_fields = {
             "company": lambda value: clean_text(value, max_len=200),
             "role": lambda value: clean_text(value, max_len=200),
@@ -1921,6 +2573,9 @@ class InternlyHandler(BaseHTTPRequestHandler):
             "status": ensure_status,
             "deadline": lambda value: parse_any_date(str(value))
             if clean_text(value, max_len=64)
+            else None,
+            "deadline_time": lambda value: parse_any_time(str(value))
+            if clean_text(value, max_len=32)
             else None,
         }
 
@@ -1941,6 +2596,15 @@ class InternlyHandler(BaseHTTPRequestHandler):
                     updates["deadline"] = fallback
                 else:
                     raise ValueError("`deadline` must be a valid date.")
+        if "deadline_time" in payload and clean_text(payload.get("deadline_time"), max_len=32):
+            if updates.get("deadline_time") is None:
+                fallback = extract_time_from_text(str(payload.get("deadline_time")))
+                if fallback:
+                    updates["deadline_time"] = fallback
+                else:
+                    raise ValueError(
+                        "`deadline_time` must be a valid time (e.g. 17:30 or 5:30 PM)."
+                    )
 
         if not updates:
             raise ValueError("No supported fields provided for update.")
@@ -1979,7 +2643,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
             conn.close()
 
 
-def run(host: str = "127.0.0.1", port: int = 8000) -> None:
+def run(host: str = "127.0.0.1", port: int = 3001) -> None:
     init_db()
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((host, port), InternlyHandler)

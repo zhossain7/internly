@@ -111,15 +111,23 @@ function getUrgencyClass(days) {
   return "";
 }
 
-function renderDeadlineCell(deadline) {
+function renderDeadlineCell(deadline, deadlineTime = null) {
+  const timeLabel = sanitize(deadlineTime || "");
   const parsed = parseDeadline(deadline);
-  if (!parsed) return "";
+  if (!parsed) {
+    if (!deadline) return timeLabel;
+    if (!timeLabel) return sanitize(deadline);
+    return `${sanitize(deadline)} ${timeLabel}`;
+  }
   const days = getDaysUntil(parsed);
   const urgencyClass = getUrgencyClass(days);
   const classAttr = urgencyClass ? ` ${urgencyClass}` : "";
+  const dateLabel = timeLabel
+    ? `${sanitize(deadline)} ${timeLabel}`
+    : sanitize(deadline);
   return `
     <div class="deadline-cell">
-      <span>${sanitize(deadline)}</span>
+      <span>${dateLabel}</span>
       <span class="deadline-badge${classAttr}">${sanitize(getUrgencyLabel(days))}</span>
     </div>
   `;
@@ -302,6 +310,8 @@ function getViewRows() {
         item.company,
         item.role,
         item.location,
+        item.deadline,
+        item.deadline_time,
         item.notes,
         item.source_url,
       ]
@@ -377,7 +387,10 @@ function renderRows(viewRows) {
         <td>${sanitize(item.company)}</td>
         <td>${sanitize(item.role)}</td>
         <td>${sanitize(item.location || "")}</td>
-        <td class="table-deadline">${renderDeadlineCell(item.deadline)}</td>
+        <td class="table-deadline">${renderDeadlineCell(
+          item.deadline,
+          item.deadline_time
+        )}</td>
         <td>
           <select data-status-id="${item.id}" class="table-status ${statusClassName(
             item.status

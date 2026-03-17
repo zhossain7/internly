@@ -12,6 +12,11 @@ const STATUSES = [
 const applicationForm = document.getElementById("applicationForm");
 const linkImportForm = document.getElementById("linkImportForm");
 const screenshotForm = document.getElementById("screenshotForm");
+const screenshotFileInput = document.getElementById("screenshotFile");
+const fileDropZone = document.getElementById("fileDropZone");
+const fileDropZoneName = document.getElementById("fileDropZoneName");
+const linkExtractionModeSelect = document.getElementById("linkExtractionMode");
+const fileExtractionModeSelect = document.getElementById("fileExtractionMode");
 const resetBtn = document.getElementById("resetBtn");
 const statusSelect = document.getElementById("status");
 const filterStatus = document.getElementById("filterStatus");
@@ -42,7 +47,30 @@ const statusSnapshot = document.getElementById("statusSnapshot");
 const revealElements = Array.from(document.querySelectorAll("[data-reveal]"));
 const THEME_KEY = "internly-theme";
 const GUEST_APPS_KEY = "internly-guest-applications";
+const FILE_IMPORT_MAX_BYTES = 20 * 1024 * 1024;
+const FILE_IMPORT_ALLOWED_EXTENSIONS = new Set([
+  ".pdf",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".tif",
+  ".tiff",
+]);
+const FILE_IMPORT_MIME_TO_EXTENSION = {
+  "application/pdf": ".pdf",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/bmp": ".bmp",
+  "image/tiff": ".tiff",
+};
 let applicationsCache = [];
+let selectedImportFile = null;
+let fileDropDragDepth = 0;
 let sessionState = {
   authenticated: false,
   is_guest: false,
@@ -196,6 +224,8 @@ function fillForm(extracted) {
   document.getElementById("location").value = extracted.location || "";
   document.getElementById("jobType").value = extracted.job_type || "";
   document.getElementById("deadline").value = extracted.deadline || "";
+  document.getElementById("deadlineTime").value =
+    extracted.deadline_time || extracted.time || "";
   document.getElementById("sourceUrl").value = extracted.source_url || "";
   document.getElementById("notes").value = extracted.notes || "";
   document.getElementById("status").value =
@@ -296,16 +326,24 @@ function sourceCell(url) {
   return `<a class="link" href="${sanitize(url)}" target="_blank" rel="noopener noreferrer">open</a>`;
 }
 
-function renderDeadlineCell(deadline) {
+function renderDeadlineCell(deadline, deadlineTime = null) {
+  const timeLabel = sanitize(deadlineTime || "");
   const parsed = parseDeadline(deadline);
-  if (!parsed) return "";
+  if (!parsed) {
+    if (!deadline) return timeLabel;
+    if (!timeLabel) return sanitize(deadline);
+    return `${sanitize(deadline)} ${timeLabel}`;
+  }
   const days = getDaysUntil(parsed);
   const urgencyClass = getUrgencyClass(days);
   const label = getUrgencyLabel(days);
   const classAttr = urgencyClass ? ` ${urgencyClass}` : "";
+  const dateLabel = timeLabel
+    ? `${sanitize(deadline)} ${timeLabel}`
+    : sanitize(deadline);
   return `
     <div class="deadline-cell">
-      <span>${sanitize(deadline)}</span>
+      <span>${dateLabel}</span>
       <span class="deadline-badge${classAttr}">${sanitize(label)}</span>
     </div>
   `;
@@ -597,7 +635,10 @@ function renderRows(applications) {
       <tr>
         <td>${sanitize(item.company)}</td>
         <td>${sanitize(item.role)}</td>
-        <td class="table-deadline">${renderDeadlineCell(item.deadline)}</td>
+        <td class="table-deadline">${renderDeadlineCell(
+          item.deadline,
+          item.deadline_time
+        )}</td>
         <td><span class="status-pill ${statusClassName(item.status)}">${sanitize(
           formatStatusLabel(item.status)
         )}</span></td>
@@ -616,7 +657,10 @@ function renderRows(applications) {
         <td>${sanitize(item.company)}</td>
         <td>${sanitize(item.role)}</td>
         <td>${sanitize(item.location || "")}</td>
-        <td class="table-deadline">${renderDeadlineCell(item.deadline)}</td>
+        <td class="table-deadline">${renderDeadlineCell(
+          item.deadline,
+          item.deadline_time
+        )}</td>
         <td>${statusCell(item)}</td>
         <td>${sourceCell(item.source_url)}</td>
         <td>
@@ -658,6 +702,7 @@ applicationForm.addEventListener("submit", async (event) => {
         location: payload.location || "",
         job_type: payload.job_type || "",
         deadline: payload.deadline || null,
+        deadline_time: payload.deadline_time || null,
         status: normalizeStatusForUI(payload.status || "wishlist"),
         source_url: payload.source_url || "",
         compensation: payload.compensation || "",
@@ -713,6 +758,7 @@ if (filterStatus) {
 linkImportForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const url = document.getElementById("linkUrl").value.trim();
+  const extractionMode = linkExtractionModeSelect?.value || "local";
   if (!url) {
     showToast("Please enter a URL.", true);
     return;
@@ -720,7 +766,7 @@ linkImportForm.addEventListener("submit", async (event) => {
   try {
     const data = await api("/api/extract/link", {
       method: "POST",
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, extraction_mode: extractionMode }),
     });
     fillForm(data.extracted || {});
     showToast("Fields extracted from link. Review and save.");
@@ -738,16 +784,225 @@ function fileToDataUrl(file) {
   });
 }
 
-screenshotForm.addEventListener("submit", async (event) => {
+function getFileExtension(filename) {
+  const value = String(filename || "");
+  const dotIndex = value.lastIndexOf(".");
+  if (dotIndex < 0) return "";
+  return value.slice(dotIndex).toLowerCase();
+}
+
+function isSupportedImportFile(file) {
+  if (!(file instanceof File)) return false;
+  const mimeType = (file.type || "").toLowerCase();
+  if (mimeType === "application/pdf" || mimeType.startsWith("image/")) {
+    return true;
+  }
+  return FILE_IMPORT_ALLOWED_EXTENSIONS.has(getFileExtension(file.name));
+}
+
+function normalizeClipboardFileName(file) {
+  if (!(file instanceof File)) return null;
+  if (String(file.name || "").trim()) return file;
+  const mimeType = (file.type || "").toLowerCase();
+  const extension = FILE_IMPORT_MIME_TO_EXTENSION[mimeType] || ".png";
+  return new File([file], `clipboard-${Date.now()}${extension}`, {
+    type: file.type || "image/png",
+    lastModified: Date.now(),
+  });
+}
+
+function getClipboardImageFiles(clipboardData) {
+  if (!clipboardData) return [];
+  const directFiles = Array.from(clipboardData.files || []).filter((file) =>
+    (file.type || "").toLowerCase().startsWith("image/")
+  );
+  if (directFiles.length) return directFiles;
+  return Array.from(clipboardData.items || [])
+    .filter(
+      (item) =>
+        item.kind === "file" && (item.type || "").toLowerCase().startsWith("image/")
+    )
+    .map((item) => item.getAsFile())
+    .filter((file) => file instanceof File);
+}
+
+function handleDropZonePaste(event) {
+  if (event.defaultPrevented) return;
+  const imageFiles = getClipboardImageFiles(event.clipboardData);
+  if (!imageFiles.length) {
+    showToast("Clipboard does not contain an image.", true);
+    return;
+  }
+  if (imageFiles.length > 1) {
+    showToast("Paste a single image.", true);
+    return;
+  }
   event.preventDefault();
-  const fileInput = document.getElementById("screenshotFile");
-  const file = fileInput.files[0];
+  const file = normalizeClipboardFileName(imageFiles[0]);
+  if (!file) {
+    showToast("Clipboard image could not be read.", true);
+    return;
+  }
+  if (chooseImportFile(file)) {
+    showToast("Image pasted. Click Extract Fields.");
+  }
+}
+
+function fileSizeLabel(bytes) {
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function updateImportFileSelection(file) {
+  selectedImportFile = file || null;
+  if (!fileDropZoneName || !fileDropZone) return;
+  if (!selectedImportFile) {
+    fileDropZoneName.textContent = "No file selected";
+    fileDropZone.classList.remove("has-file");
+    return;
+  }
+  fileDropZoneName.textContent = `${selectedImportFile.name} (${fileSizeLabel(
+    selectedImportFile.size
+  )})`;
+  fileDropZone.classList.add("has-file");
+}
+
+function syncFileInputSelection(file) {
+  if (!screenshotFileInput || !file) return;
+  if (typeof DataTransfer === "undefined") return;
+  try {
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    screenshotFileInput.files = transfer.files;
+  } catch (error) {
+    /* no-op */
+  }
+}
+
+function chooseImportFile(file) {
+  if (!(file instanceof File)) {
+    showToast("Please choose a file.", true);
+    updateImportFileSelection(null);
+    return false;
+  }
+  if (!isSupportedImportFile(file)) {
+    showToast("Only PDF and image files are supported.", true);
+    updateImportFileSelection(null);
+    return false;
+  }
+  if (file.size > FILE_IMPORT_MAX_BYTES) {
+    showToast("File is too large. Keep it below 20 MB.", true);
+    updateImportFileSelection(null);
+    return false;
+  }
+  updateImportFileSelection(file);
+  syncFileInputSelection(file);
+  return true;
+}
+
+function getSelectedImportFile() {
+  return selectedImportFile || screenshotFileInput?.files?.[0] || null;
+}
+
+function setDropZoneDragging(isDragging) {
+  if (!fileDropZone) return;
+  fileDropZone.classList.toggle("is-dragover", isDragging);
+}
+
+function initFileDropZone() {
+  if (!screenshotFileInput || !fileDropZone) return;
+
+  screenshotFileInput.addEventListener("change", () => {
+    const file = screenshotFileInput.files?.[0] || null;
+    if (!file) {
+      updateImportFileSelection(null);
+      return;
+    }
+    if (!chooseImportFile(file)) {
+      screenshotFileInput.value = "";
+      return;
+    }
+  });
+
+  fileDropZone.addEventListener("click", (event) => {
+    event.preventDefault();
+    fileDropZone.focus();
+    screenshotFileInput.click();
+  });
+
+  fileDropZone.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    screenshotFileInput.click();
+  });
+
+  fileDropZone.addEventListener("dragenter", (event) => {
+    event.preventDefault();
+    fileDropDragDepth += 1;
+    setDropZoneDragging(true);
+  });
+
+  fileDropZone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "copy";
+    }
+    setDropZoneDragging(true);
+  });
+
+  fileDropZone.addEventListener("dragleave", (event) => {
+    event.preventDefault();
+    fileDropDragDepth = Math.max(0, fileDropDragDepth - 1);
+    if (fileDropDragDepth === 0) {
+      setDropZoneDragging(false);
+    }
+  });
+
+  fileDropZone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    fileDropDragDepth = 0;
+    setDropZoneDragging(false);
+
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (!files.length) {
+      return;
+    }
+    if (files.length > 1) {
+      showToast("Drop a single PDF or image file.", true);
+      return;
+    }
+    if (chooseImportFile(files[0])) {
+      showToast("File selected. Click Extract Fields.");
+    }
+  });
+
+  fileDropZone.addEventListener("paste", handleDropZonePaste);
+  document.addEventListener("paste", (event) => {
+    if (event.defaultPrevented) return;
+    if (document.activeElement !== fileDropZone) return;
+    handleDropZonePaste(event);
+  });
+}
+
+screenshotForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const extractionMode = fileExtractionModeSelect?.value || "local";
+  const file = getSelectedImportFile();
   if (!file) {
     showToast("Please choose a file.", true);
     return;
   }
 
-  if (file.size > 20 * 1024 * 1024) {
+  if (!isSupportedImportFile(file)) {
+    showToast("Only PDF and image files are supported.", true);
+    return;
+  }
+
+  if (file.size > FILE_IMPORT_MAX_BYTES) {
     showToast("File is too large. Keep it below 20 MB.", true);
     return;
   }
@@ -760,6 +1015,7 @@ screenshotForm.addEventListener("submit", async (event) => {
         file_base64: fileBase64,
         filename: file.name,
         mime_type: file.type || null,
+        extraction_mode: extractionMode,
       }),
     });
     fillForm(data.extracted || {});
@@ -842,6 +1098,7 @@ async function init() {
   }
   initThemeToggle();
   populateStatusOptions();
+  initFileDropZone();
   try {
     sessionState = await getSession();
     if (!sessionState.authenticated) {

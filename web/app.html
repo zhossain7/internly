@@ -131,6 +131,10 @@
               <input id="deadline" name="deadline" type="date" />
             </label>
             <label>
+              Time (if applicable)
+              <input id="deadlineTime" name="deadline_time" type="time" />
+            </label>
+            <label>
               Status
               <select id="status" name="status" class="table-status status-wishlist"></select>
             </label>
@@ -159,9 +163,20 @@
                 Job URL (HTML, PDF, or Image)
                 <input id="linkUrl" placeholder="https://company.com/jobs/..." required />
               </label>
+              <label>
+                Extraction Mode
+                <select id="linkExtractionMode">
+                  <option value="local" selected>Local OCR</option>
+                  <option value="auto">Auto (Gemini if configured)</option>
+                  <option value="gemini">Gemini 2.5 Flash</option>
+                </select>
+              </label>
               <button type="submit">Extract Fields</button>
             </form>
-            <p class="help-text">URL extraction auto-detects page, PDF, and image links.</p>
+            <p class="help-text">
+              URL extraction auto-detects page, PDF, and image links. Gemini mode needs
+              <code>GEMINI_API_KEY</code> on the server.
+            </p>
           </section>
 
           <section class="card">
@@ -171,13 +186,38 @@
             <form id="screenshotForm" class="stack-form">
               <label>
                 Upload PDF or Image
-                <input id="screenshotFile" type="file" accept=".pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/tiff" required />
+                <div
+                  id="fileDropZone"
+                  class="file-drop-zone"
+                  role="button"
+                  tabindex="0"
+                  aria-label="Drag and drop a PDF or image, click to choose a file, or press Control+V to paste an image"
+                >
+                  <p class="file-drop-zone-title">Drag and drop PDF or image here</p>
+                  <p class="file-drop-zone-subtitle">Click to browse from your device</p>
+                  <p class="file-drop-zone-subtitle">or press Ctrl+V to paste an image</p>
+                  <p id="fileDropZoneName" class="file-drop-zone-name">No file selected</p>
+                </div>
+                <input
+                  id="screenshotFile"
+                  class="file-input-hidden"
+                  type="file"
+                  accept=".pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/tiff"
+                />
+              </label>
+              <label>
+                Extraction Mode
+                <select id="fileExtractionMode">
+                  <option value="local" selected>Local OCR</option>
+                  <option value="auto">Auto (Gemini if configured)</option>
+                  <option value="gemini">Gemini 2.5 Flash</option>
+                </select>
               </label>
               <button type="submit">Extract Fields</button>
             </form>
             <p class="help-text">
               Works with PDF and images. Best results with <code>pdftotext</code>, <code>pdftoppm</code>, and
-              <code>tesseract</code> installed.
+              <code>tesseract</code> installed, or Gemini mode with <code>GEMINI_API_KEY</code>.
             </p>
           </section>
         </aside>

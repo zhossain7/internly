@@ -9,7 +9,7 @@ Internly is a focused pipeline for internship and graduate-role tracking with bu
 
 ## What Internly Does
 
-- Tracks roles by company, position, deadline, status, notes, and source link.
+- Tracks roles by company, position, deadline, optional time, status, notes, and source link.
 - Extracts useful fields from job links (HTML, PDF, and image links auto-detected).
 - Extracts from uploaded PDFs and screenshots using OCR fallback where needed.
 - Supports secure sign-in and guest mode.
@@ -42,6 +42,30 @@ Internly creates `internly.db` automatically in the project root.
 - `pdftoppm` + `tesseract` for scanned PDFs.
 
 If these tools are not installed, you can still review and enter details manually.
+
+## Optional Gemini Mode
+
+Internly now supports extraction modes:
+
+- `local`: current local parser + OCR/PDF tooling.
+- `gemini`: force Gemini API for PDF/image extraction.
+- `auto`: use Gemini for PDF/image if configured, otherwise local.
+
+Server env vars:
+
+- `EXTRACTION_MODE` (`local`, `gemini`, `auto`; default `local`)
+- `GEMINI_API_KEY` (required for `gemini`)
+
+Gemini model is pinned to `gemini-2.5-flash` (free-tier friendly).
+
+You can set these in a local `.env` file in the project root:
+
+```env
+GEMINI_API_KEY=your_key_here
+EXTRACTION_MODE=auto
+```
+
+You can also choose extraction mode per request in the dashboard import forms.
 
 ## Notes
 
