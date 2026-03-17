@@ -44,18 +44,21 @@ Internly creates `internly.db` automatically in the project root.
 
 If these tools are not installed, you can still review and enter details manually.
 
-## Optional Gemini Mode
+## Optional AI Extraction Modes
 
 Internly now supports extraction modes:
 
 - `local`: current local parser + OCR/PDF tooling.
 - `gemini`: force Gemini API for PDF/image extraction.
-- `auto`: use Gemini for PDF/image if configured, otherwise local.
+- `groq`: force Groq API extraction from extracted document text.
+- `auto`: use Gemini for PDF/image when configured, otherwise Groq when configured, otherwise local.
 
 Server env vars:
 
-- `EXTRACTION_MODE` (`local`, `gemini`, `auto`; default `local`)
+- `EXTRACTION_MODE` (`local`, `gemini`, `groq`, `auto`; default `local`)
 - `GEMINI_API_KEY` (required for `gemini`)
+- `GROQ_API_KEY` (required for `groq`)
+- `GROQ_MODEL` (optional, defaults to `llama-3.3-70b-versatile`)
 
 Gemini model is pinned to `gemini-2.5-flash` (free-tier friendly).
 
@@ -63,6 +66,7 @@ You can set these in a local `.env` file in the project root:
 
 ```env
 GEMINI_API_KEY=your_key_here
+GROQ_API_KEY=your_key_here
 EXTRACTION_MODE=auto
 ```
 

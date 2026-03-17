@@ -11,12 +11,21 @@ const STATUSES = [
 
 const applicationForm = document.getElementById("applicationForm");
 const linkImportForm = document.getElementById("linkImportForm");
+const linkUrlInput = document.getElementById("linkUrl");
+const linkTextInput = document.getElementById("linkText");
 const screenshotForm = document.getElementById("screenshotForm");
 const screenshotFileInput = document.getElementById("screenshotFile");
 const fileDropZone = document.getElementById("fileDropZone");
 const fileDropZoneName = document.getElementById("fileDropZoneName");
+const importFileCard = document.getElementById("importFileCard");
 const linkExtractionModeSelect = document.getElementById("linkExtractionMode");
 const fileExtractionModeSelect = document.getElementById("fileExtractionMode");
+const linkExtractProgress = document.getElementById("linkExtractProgress");
+const linkExtractProgressText = document.getElementById("linkExtractProgressText");
+const linkExtractProgressMode = document.getElementById("linkExtractProgressMode");
+const fileExtractProgress = document.getElementById("fileExtractProgress");
+const fileExtractProgressText = document.getElementById("fileExtractProgressText");
+const fileExtractProgressMode = document.getElementById("fileExtractProgressMode");
 const resetBtn = document.getElementById("resetBtn");
 const statusSelect = document.getElementById("status");
 const filterStatus = document.getElementById("filterStatus");
@@ -71,6 +80,12 @@ const FILE_IMPORT_MIME_TO_EXTENSION = {
 let applicationsCache = [];
 let selectedImportFile = null;
 let fileDropDragDepth = 0;
+let importFileCardHovered = false;
+let importFileCardArmedUntil = 0;
+let fileExtractionQueue = [];
+let isFileExtractionRunning = false;
+let linkExtractHideTimeoutId = null;
+let fileExtractHideTimeoutId = null;
 let sessionState = {
   authenticated: false,
   is_guest: false,
@@ -231,6 +246,93 @@ function fillForm(extracted) {
   document.getElementById("status").value =
     normalizeStatusForUI(extracted.status) || "wishlist";
   applyStatusSelectStyle(statusSelect, statusSelect.value);
+}
+
+function formatExtractionModeLabel(mode) {
+  const normalized = String(mode || "local").toLowerCase();
+  if (normalized === "gemini") return "Gemini 2.5 Flash";
+  if (normalized === "groq") return "Groq";
+  if (normalized === "auto") return "Auto";
+  return "Local OCR";
+}
+
+function setExtractButtonBusy(formElement, isBusy, options = {}) {
+  const submitButton = formElement?.querySelector('button[type="submit"]');
+  if (!submitButton) return;
+  if (!submitButton.dataset.defaultLabel) {
+    submitButton.dataset.defaultLabel = submitButton.textContent || "Extract Fields";
+  }
+  const disableButton = options.disable !== false;
+  const busyLabel = options.busyLabel || "Extracting...";
+  submitButton.disabled = disableButton ? isBusy : false;
+  submitButton.textContent = isBusy
+    ? busyLabel
+    : submitButton.dataset.defaultLabel;
+}
+
+function extractionProgressParts(kind) {
+  if (kind === "link") {
+    return {
+      root: linkExtractProgress,
+      text: linkExtractProgressText,
+      mode: linkExtractProgressMode,
+      hideTimeoutId: linkExtractHideTimeoutId,
+      setHideTimeoutId: (value) => {
+        linkExtractHideTimeoutId = value;
+      },
+    };
+  }
+  return {
+    root: fileExtractProgress,
+    text: fileExtractProgressText,
+    mode: fileExtractProgressMode,
+    hideTimeoutId: fileExtractHideTimeoutId,
+    setHideTimeoutId: (value) => {
+      fileExtractHideTimeoutId = value;
+    },
+  };
+}
+
+function showExtractionProgress(kind, mode, options = {}) {
+  const parts = extractionProgressParts(kind);
+  if (!parts.root || !parts.text || !parts.mode) return;
+  const queueCount = Number.isFinite(options.queueCount)
+    ? Math.max(0, options.queueCount)
+    : 0;
+  window.clearTimeout(parts.hideTimeoutId);
+  parts.root.classList.remove("hidden", "is-complete", "is-error");
+  parts.root.classList.add("is-active");
+  parts.text.textContent =
+    queueCount > 0
+      ? `Extracting fields... (${queueCount} queued)`
+      : "Extracting fields...";
+  parts.mode.textContent = `Mode: ${formatExtractionModeLabel(mode)}`;
+}
+
+function finishExtractionProgress(kind, options = {}) {
+  const success = !!options.success;
+  const queueCount = Number.isFinite(options.queueCount)
+    ? Math.max(0, options.queueCount)
+    : 0;
+  const parts = extractionProgressParts(kind);
+  if (!parts.root || !parts.text || !parts.mode) return;
+  window.clearTimeout(parts.hideTimeoutId);
+  parts.root.classList.remove("is-active");
+  parts.root.classList.add(success ? "is-complete" : "is-error");
+  if (!success) {
+    parts.text.textContent = "Extraction failed.";
+  } else if (queueCount > 0) {
+    parts.text.textContent = `Extraction complete. Next item starting (${queueCount} queued).`;
+  } else {
+    parts.text.textContent = "Extraction complete.";
+  }
+  parts.mode.textContent = "";
+  parts.setHideTimeoutId(
+    window.setTimeout(() => {
+      parts.root.classList.add("hidden");
+      parts.root.classList.remove("is-complete", "is-error");
+    }, 1400)
+  );
 }
 
 async function api(path, options = {}) {
@@ -757,21 +859,44 @@ if (filterStatus) {
 
 linkImportForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const url = document.getElementById("linkUrl").value.trim();
+  const url = linkUrlInput?.value.trim() || "";
+  const rawText = linkTextInput?.value.trim() || "";
+  const hasPastedText = rawText.length > 0;
   const extractionMode = linkExtractionModeSelect?.value || "local";
-  if (!url) {
-    showToast("Please enter a URL.", true);
+  if (!url && !hasPastedText) {
+    showToast("Enter a URL or paste job text.", true);
     return;
   }
+  const progressMode = extractionMode;
+  setExtractButtonBusy(linkImportForm, true);
+  showExtractionProgress("link", progressMode);
+  let extractionSucceeded = false;
   try {
-    const data = await api("/api/extract/link", {
-      method: "POST",
-      body: JSON.stringify({ url, extraction_mode: extractionMode }),
-    });
+    const data = hasPastedText
+      ? await api("/api/extract/text", {
+          method: "POST",
+          body: JSON.stringify({
+            text: rawText,
+            source_url: url || null,
+            extraction_mode: extractionMode,
+          }),
+        })
+      : await api("/api/extract/link", {
+          method: "POST",
+          body: JSON.stringify({ url, extraction_mode: extractionMode }),
+        });
     fillForm(data.extracted || {});
-    showToast("Fields extracted from link. Review and save.");
+    showToast(
+      hasPastedText
+        ? "Fields extracted from pasted text. Review and save."
+        : "Fields extracted from link. Review and save."
+    );
+    extractionSucceeded = true;
   } catch (error) {
     showToast(error.message, true);
+  } finally {
+    setExtractButtonBusy(linkImportForm, false);
+    finishExtractionProgress("link", { success: extractionSucceeded });
   }
 });
 
@@ -826,11 +951,15 @@ function getClipboardImageFiles(clipboardData) {
     .filter((file) => file instanceof File);
 }
 
-function handleDropZonePaste(event) {
+function handleDropZonePaste(event, options = {}) {
+  const showNoImageError = options.showNoImageError !== false;
+  const queueWhileBusy = options.queueWhileBusy === true;
   if (event.defaultPrevented) return;
   const imageFiles = getClipboardImageFiles(event.clipboardData);
   if (!imageFiles.length) {
-    showToast("Clipboard does not contain an image.", true);
+    if (showNoImageError) {
+      showToast("Clipboard does not contain an image.", true);
+    }
     return;
   }
   if (imageFiles.length > 1) {
@@ -844,8 +973,29 @@ function handleDropZonePaste(event) {
     return;
   }
   if (chooseImportFile(file)) {
+    const extractionMode = fileExtractionModeSelect?.value || "local";
+    if (queueWhileBusy && isFileExtractionRunning) {
+      enqueueFileExtraction(file, extractionMode, { announce: true });
+      return;
+    }
     showToast("Image pasted. Click Extract Fields.");
   }
+}
+
+function isEditableElement(element) {
+  if (!(element instanceof Element)) return false;
+  if (element instanceof HTMLTextAreaElement) return true;
+  if (element instanceof HTMLInputElement) {
+    const inputType = (element.type || "text").toLowerCase();
+    return !["checkbox", "radio", "button", "submit", "reset", "file"].includes(
+      inputType
+    );
+  }
+  return element instanceof HTMLElement && element.isContentEditable;
+}
+
+function armImportFileCardPaste() {
+  importFileCardArmedUntil = Date.now() + 12000;
 }
 
 function fileSizeLabel(bytes) {
@@ -904,6 +1054,81 @@ function chooseImportFile(file) {
 
 function getSelectedImportFile() {
   return selectedImportFile || screenshotFileInput?.files?.[0] || null;
+}
+
+function pendingFileExtractions() {
+  return fileExtractionQueue.length;
+}
+
+function updateFileExtractButtonState() {
+  if (!screenshotForm) return;
+  const queued = pendingFileExtractions();
+  const busyLabel =
+    queued > 0 ? `Extracting... (${queued} queued)` : "Extracting...";
+  setExtractButtonBusy(screenshotForm, isFileExtractionRunning, {
+    disable: false,
+    busyLabel,
+  });
+}
+
+function enqueueFileExtraction(file, extractionMode, options = {}) {
+  fileExtractionQueue.push({
+    file,
+    extractionMode: extractionMode || "local",
+  });
+  if (options.announce) {
+    showToast(`Queued for extraction (${pendingFileExtractions()} waiting).`);
+  }
+  updateFileExtractButtonState();
+  if (!isFileExtractionRunning) {
+    void processFileExtractionQueue();
+  }
+}
+
+async function processFileExtractionQueue() {
+  if (isFileExtractionRunning) return;
+  const nextJob = fileExtractionQueue.shift();
+  if (!nextJob) {
+    updateFileExtractButtonState();
+    return;
+  }
+
+  const extractionMode = nextJob.extractionMode || "local";
+  const file = nextJob.file;
+  isFileExtractionRunning = true;
+  updateFileExtractButtonState();
+  showExtractionProgress("file", extractionMode, {
+    queueCount: pendingFileExtractions(),
+  });
+
+  let extractionSucceeded = false;
+  try {
+    const fileBase64 = await fileToDataUrl(file);
+    const data = await api("/api/extract/file", {
+      method: "POST",
+      body: JSON.stringify({
+        file_base64: fileBase64,
+        filename: file.name,
+        mime_type: file.type || null,
+        extraction_mode: extractionMode,
+      }),
+    });
+    fillForm(data.extracted || {});
+    showToast("Fields extracted from file. Review and save.");
+    extractionSucceeded = true;
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    isFileExtractionRunning = false;
+    finishExtractionProgress("file", {
+      success: extractionSucceeded,
+      queueCount: pendingFileExtractions(),
+    });
+    updateFileExtractButtonState();
+    if (pendingFileExtractions() > 0) {
+      void processFileExtractionQueue();
+    }
+  }
 }
 
 function setDropZoneDragging(isDragging) {
@@ -980,15 +1205,42 @@ function initFileDropZone() {
     }
   });
 
-  fileDropZone.addEventListener("paste", handleDropZonePaste);
+  fileDropZone.addEventListener("paste", (event) => {
+    handleDropZonePaste(event, { queueWhileBusy: true });
+  });
+  if (importFileCard) {
+    importFileCard.addEventListener("mouseenter", () => {
+      importFileCardHovered = true;
+    });
+    importFileCard.addEventListener("mouseleave", () => {
+      importFileCardHovered = false;
+    });
+    importFileCard.addEventListener("click", () => {
+      armImportFileCardPaste();
+    });
+    importFileCard.addEventListener("focusin", () => {
+      armImportFileCardPaste();
+    });
+  }
   document.addEventListener("paste", (event) => {
     if (event.defaultPrevented) return;
-    if (document.activeElement !== fileDropZone) return;
-    handleDropZonePaste(event);
+    const activeElement = document.activeElement;
+    if (isEditableElement(activeElement)) return;
+    const activeInsideImportCard = !!(
+      importFileCard &&
+      activeElement instanceof Element &&
+      importFileCard.contains(activeElement)
+    );
+    const pasteArmed = Date.now() < importFileCardArmedUntil;
+    if (!activeInsideImportCard && !importFileCardHovered && !pasteArmed) return;
+    handleDropZonePaste(event, {
+      showNoImageError: false,
+      queueWhileBusy: true,
+    });
   });
 }
 
-screenshotForm?.addEventListener("submit", async (event) => {
+screenshotForm?.addEventListener("submit", (event) => {
   event.preventDefault();
   const extractionMode = fileExtractionModeSelect?.value || "local";
   const file = getSelectedImportFile();
@@ -1007,21 +1259,10 @@ screenshotForm?.addEventListener("submit", async (event) => {
     return;
   }
 
-  try {
-    const fileBase64 = await fileToDataUrl(file);
-    const data = await api("/api/extract/file", {
-      method: "POST",
-      body: JSON.stringify({
-        file_base64: fileBase64,
-        filename: file.name,
-        mime_type: file.type || null,
-        extraction_mode: extractionMode,
-      }),
-    });
-    fillForm(data.extracted || {});
-    showToast("Fields extracted from file. Review and save.");
-  } catch (error) {
-    showToast(error.message, true);
+  const announceQueue = isFileExtractionRunning || pendingFileExtractions() > 0;
+  enqueueFileExtraction(file, extractionMode, { announce: announceQueue });
+  if (!announceQueue) {
+    showToast("Extraction started.");
   }
 });
 
@@ -1099,6 +1340,7 @@ async function init() {
   initThemeToggle();
   populateStatusOptions();
   initFileDropZone();
+  updateFileExtractButtonState();
   try {
     sessionState = await getSession();
     if (!sessionState.authenticated) {

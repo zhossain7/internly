@@ -69,6 +69,9 @@ DEFAULT_EXTRACTION_MODE = (os.environ.get("EXTRACTION_MODE") or "local").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_TIMEOUT_SECONDS = 45
+GROQ_API_KEY = (os.environ.get("GROQ_API_KEY") or "").strip()
+GROQ_MODEL = (os.environ.get("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
+GROQ_TIMEOUT_SECONDS = 45
 
 ALLOWED_STATUSES = {
     "wishlist",
@@ -279,6 +282,26 @@ def extract_time_from_text(value: str) -> str | None:
     return None
 
 
+def extract_unique_time_from_text(value: str) -> str | None:
+    normalized = normalize_space(value)
+    patterns = [
+        r"\b\d{1,2}(?::\d{2})\s*(?:[AaPp]\.?[Mm]\.?)?\b",
+        r"\b\d{1,2}\s*(?:[AaPp]\.?[Mm]\.?)\b",
+    ]
+    found: list[str] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, normalized):
+            parsed = parse_any_time(match.group(0))
+            if not parsed or parsed in seen:
+                continue
+            seen.add(parsed)
+            found.append(parsed)
+    if len(found) == 1:
+        return found[0]
+    return None
+
+
 def is_valid_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
@@ -383,12 +406,12 @@ def normalize_extraction_mode(value: Any | None) -> str:
     raw_mode = clean_text(value, max_len=24)
     mode = (raw_mode or DEFAULT_EXTRACTION_MODE or "local").strip().lower()
     mode_aliases = {
-        "ai": "gemini",
+        "ai": "auto",
         "default": "local",
     }
     mode = mode_aliases.get(mode, mode)
-    if mode not in {"local", "gemini", "auto"}:
-        raise ValueError("Invalid extraction_mode. Use one of: local, gemini, auto.")
+    if mode not in {"local", "gemini", "groq", "auto"}:
+        raise ValueError("Invalid extraction_mode. Use one of: local, gemini, groq, auto.")
     return mode
 
 
@@ -399,6 +422,14 @@ def should_use_gemini(mode: str, *, file_kind: str) -> bool:
         return True
     if mode == "auto":
         return bool(GEMINI_API_KEY)
+    return False
+
+
+def should_use_groq(mode: str, *, gemini_selected: bool) -> bool:
+    if mode == "groq":
+        return True
+    if mode == "auto":
+        return bool(GROQ_API_KEY) and not gemini_selected
     return False
 
 
@@ -422,6 +453,22 @@ def extract_text_from_gemini_response(payload: dict[str, Any]) -> str | None:
             text = clean_text(part.get("text"), max_len=40000)
             if text:
                 return text
+    return None
+
+
+def extract_text_from_openai_chat_response(payload: dict[str, Any]) -> str | None:
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return None
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        text = clean_text(message.get("content"), max_len=40000)
+        if text:
+            return text
     return None
 
 
@@ -464,6 +511,8 @@ def normalize_gemini_extracted_fields(
     deadline_time = parse_any_time(deadline_time_raw) if deadline_time_raw else None
     if deadline_time_raw and not deadline_time:
         deadline_time = extract_time_from_text(deadline_time_raw)
+    if not deadline_time and deadline_raw:
+        deadline_time = extract_time_from_text(deadline_raw)
 
     notes_source = clean_text(payload.get("notes"), max_len=2500) or ""
     notes = clean_notes_text(notes_source) if notes_source else None
@@ -576,6 +625,95 @@ def extract_with_gemini_from_file(
         "source_type": "gemini",
         "provider": "gemini",
         "model": GEMINI_MODEL,
+    }
+    return extracted
+
+
+def extract_with_groq_from_text(text: str, *, source_url: str | None = None) -> dict[str, Any]:
+    if not GROQ_API_KEY:
+        raise RuntimeError("Groq mode requires GROQ_API_KEY.")
+
+    cleaned_text = clean_text(text, max_len=26000)
+    if not cleaned_text:
+        raise RuntimeError("No readable text was found for Groq extraction.")
+
+    source_line = source_url if source_url and is_valid_url(source_url) else "unknown"
+    prompt = (
+        "Extract job application fields from the text below.\n"
+        "Return only JSON with keys:\n"
+        "company, role, location, job_type, deadline, deadline_time, notes, source_url\n"
+        "Rules:\n"
+        "- deadline must use YYYY-MM-DD when available, else null.\n"
+        "- deadline_time must use HH:MM (24-hour) when available, else null.\n"
+        "- Keep notes concise and useful.\n"
+        "- Use null for unknown values.\n\n"
+        f"Source URL: {source_line}\n\n"
+        f"Job posting text:\n{cleaned_text}"
+    )
+
+    request_payload = {
+        "model": GROQ_MODEL,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": "You extract structured job fields and return strict JSON only.",
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+    }
+
+    request = Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=json.dumps(request_payload, ensure_ascii=True).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Accept": "application/json",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36 Internly/1.0"
+            ),
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=GROQ_TIMEOUT_SECONDS) as response:
+            response_bytes = response.read()
+    except HTTPError as error:
+        detail = clean_text(error.read().decode("utf-8", errors="ignore"), max_len=280)
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Groq extraction failed ({error.code}){suffix}") from error
+    except URLError as error:
+        raise RuntimeError(f"Groq extraction network error: {error.reason}") from error
+    except Exception as error:
+        raise RuntimeError(f"Groq extraction failed: {error}") from error
+
+    try:
+        response_payload = json.loads(response_bytes.decode("utf-8"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Groq returned an invalid API response.") from error
+
+    response_text = extract_text_from_openai_chat_response(response_payload)
+    if not response_text:
+        raise RuntimeError("Groq returned an empty extraction response.")
+
+    extracted_object = parse_json_object_from_text(response_text)
+    if not extracted_object:
+        raise RuntimeError("Groq did not return parseable JSON fields.")
+
+    extracted = normalize_gemini_extracted_fields(extracted_object, source_url=source_url)
+    extracted["raw"] = {
+        "source_type": "groq",
+        "provider": "groq",
+        "model": GROQ_MODEL,
+        "text_preview": cleaned_text[:900],
     }
     return extracted
 
@@ -1482,15 +1620,15 @@ def extract_from_job_text(text: str, *, source_url: str | None = None) -> dict[s
     raw_deadline = extract_labeled_field(
         lines,
         [
-            r"(?:deadline|apply by|applications close|closing date)\s*[:\-]\s*(.+)",
+            r"(?:deadline|apply by|applications close|closing date|closes?)\s*(?:[:\-]|\bis\b|\bon\b|\bat\b)?\s*(.+)",
         ],
     )
     deadline = extract_date_from_text(raw_deadline or normalized) if (raw_deadline or normalized) else None
     raw_deadline_time = extract_labeled_field(
         lines,
         [
-            r"(?:deadline time|closing time|time)\s*[:\-]\s*(.+)",
-            r"(?:applications close at|apply by)\s*[:\-]\s*(.+)",
+            r"(?:deadline time|closing time|time)\s*(?:[:\-]|\bis\b|\bon\b|\bat\b)?\s*(.+)",
+            r"(?:applications close at|apply by|closes? at)\s*(?:[:\-]|\bis\b)?\s*(.+)",
         ],
     )
     deadline_time = None
@@ -1500,6 +1638,20 @@ def extract_from_job_text(text: str, *, source_url: str | None = None) -> dict[s
         deadline_time = parse_any_time(raw_deadline_time) or extract_time_from_text(
             raw_deadline_time
         )
+    if not deadline_time:
+        deadline_context = [
+            line
+            for line in lines
+            if re.search(
+                r"\b(deadline|apply by|applications close|closing date|closing time|closes?)\b",
+                line,
+                re.IGNORECASE,
+            )
+        ]
+        if deadline_context:
+            deadline_time = extract_time_from_text(" ".join(deadline_context))
+    if not deadline_time and deadline:
+        deadline_time = extract_unique_time_from_text(normalized)
 
     if not role:
         role = infer_role_from_unlabeled_text(lines, normalized)
@@ -1609,6 +1761,149 @@ def extract_from_html_document(
     return extracted
 
 
+def extract_text_for_llm_from_file_bytes(
+    file_bytes: bytes,
+    *,
+    file_kind: str,
+    filename: str | None = None,
+    mime_type: str | None = None,
+    source_url: str | None = None,
+    content_type: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    normalized_mime = extract_mime_type(mime_type) or extract_mime_type(content_type)
+
+    if file_kind == "html":
+        html = decode_text_bytes(file_bytes)
+        parser = JobPageParser()
+        parser.feed(html)
+        page_title = clean_text(" ".join(parser.title_parts), max_len=260)
+        meta_description = clean_text(
+            parser.meta.get("description")
+            or parser.meta.get("og:description")
+            or parser.meta.get("twitter:description"),
+            max_len=500,
+        )
+        stripped_html = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html)
+        plain_text = normalize_space(re.sub(r"(?s)<[^>]+>", " ", stripped_html))
+        seed_text = clean_text(
+            "\n".join(part for part in [page_title, meta_description, plain_text] if part),
+            max_len=26000,
+        )
+        if not seed_text:
+            raise RuntimeError("Could not extract readable text from HTML.")
+        return (
+            seed_text,
+            {
+                "source_type": "html",
+                "content_type": normalized_mime,
+                "title": page_title,
+                "meta_description": meta_description,
+            },
+        )
+
+    if file_kind == "text":
+        raw_text = decode_text_bytes(file_bytes)
+        seed_text = clean_text(raw_text, max_len=26000)
+        if not seed_text:
+            raise RuntimeError("Could not extract readable text from text file.")
+        return (
+            seed_text,
+            {
+                "source_type": "text",
+                "content_type": normalized_mime,
+                "text_preview": clean_text(raw_text, max_len=900) or "",
+            },
+        )
+
+    if file_kind == "image":
+        if len(file_bytes) > MAX_OCR_IMAGE_BYTES:
+            raise ValueError(
+                f"Image is too large. Keep it below {MAX_OCR_IMAGE_BYTES // (1024 * 1024)} MB."
+            )
+        suffix = Path(filename or "").suffix.lower()
+        if suffix not in IMAGE_EXTENSIONS:
+            suffix = extension_from_mime(normalized_mime) or ".png"
+        with tempfile.TemporaryDirectory(prefix="internly-image-ocr-") as temp_dir:
+            image_path = Path(temp_dir) / f"upload{suffix}"
+            image_path.write_bytes(file_bytes)
+            extracted_text = run_tesseract_on_image_path(image_path)
+        return (
+            extracted_text,
+            {
+                "source_type": "image",
+                "content_type": normalized_mime,
+                "ocr_text_preview": extracted_text[:900],
+            },
+        )
+
+    if file_kind == "pdf":
+        with tempfile.TemporaryDirectory(prefix="internly-pdf-") as temp_dir:
+            pdf_name = filename or "document.pdf"
+            if not pdf_name.lower().endswith(".pdf"):
+                pdf_name = f"{pdf_name}.pdf"
+            pdf_path = Path(temp_dir) / Path(pdf_name).name
+            pdf_path.write_bytes(file_bytes)
+            extracted_text, methods_used = extract_text_from_pdf_file(pdf_path)
+        return (
+            extracted_text,
+            {
+                "source_type": "pdf",
+                "content_type": normalized_mime or "application/pdf",
+                "methods": methods_used,
+                "text_preview": extracted_text[:900],
+            },
+        )
+
+    fallback_text = decode_text_bytes(file_bytes)
+    if len(normalize_space(fallback_text)) < 30:
+        raise RuntimeError(
+            "Unsupported file format. Use PDF, image, text, or a URL to the job posting."
+        )
+    return (
+        fallback_text,
+        {
+            "source_type": "binary-fallback",
+            "content_type": normalized_mime,
+            "text_preview": clean_text(fallback_text, max_len=900) or "",
+        },
+    )
+
+
+def extract_with_groq_from_file_bytes(
+    file_bytes: bytes,
+    *,
+    file_kind: str,
+    filename: str | None = None,
+    mime_type: str | None = None,
+    source_url: str | None = None,
+    content_type: str | None = None,
+) -> dict[str, Any]:
+    seed_text, seed_meta = extract_text_for_llm_from_file_bytes(
+        file_bytes,
+        file_kind=file_kind,
+        filename=filename,
+        mime_type=mime_type,
+        source_url=source_url,
+        content_type=content_type,
+    )
+    extracted = extract_with_groq_from_text(seed_text, source_url=source_url)
+    extracted["raw"] = {
+        "source_type": "groq",
+        "provider": "groq",
+        "model": GROQ_MODEL,
+        "input_source_type": seed_meta.get("source_type"),
+        "content_type": seed_meta.get("content_type"),
+        "text_preview": clean_text(seed_text, max_len=900) or "",
+    }
+    if isinstance(seed_meta.get("methods"), list):
+        extracted["raw"]["methods"] = seed_meta["methods"]
+    if seed_meta.get("title"):
+        extracted["raw"]["title"] = seed_meta["title"]
+    if seed_meta.get("meta_description"):
+        extracted["raw"]["meta_description"] = seed_meta["meta_description"]
+    return extracted
+
+
 def extract_from_file_bytes(
     file_bytes: bytes,
     *,
@@ -1626,8 +1921,8 @@ def extract_from_file_bytes(
         content_type=content_type,
     )
     normalized_mime = extract_mime_type(mime_type) or extract_mime_type(content_type)
-
-    if should_use_gemini(mode, file_kind=file_kind):
+    gemini_selected = should_use_gemini(mode, file_kind=file_kind)
+    if gemini_selected:
         gemini_mime = normalized_mime
         if not gemini_mime:
             if file_kind == "pdf":
@@ -1653,6 +1948,21 @@ def extract_from_file_bytes(
             )
         except RuntimeError:
             if mode == "gemini":
+                raise
+            gemini_selected = False
+
+    if should_use_groq(mode, gemini_selected=gemini_selected):
+        try:
+            return extract_with_groq_from_file_bytes(
+                file_bytes,
+                file_kind=file_kind,
+                filename=filename,
+                mime_type=mime_type,
+                source_url=source_url,
+                content_type=content_type,
+            )
+        except RuntimeError:
+            if mode == "groq":
                 raise
 
     if file_kind == "html":
@@ -1796,6 +2106,22 @@ def extract_from_screenshot_b64(
     except ValueError as error:
         message = str(error).replace("file_base64", "image_base64")
         raise ValueError(message) from error
+
+
+def extract_from_text_with_mode(
+    raw_text: str,
+    *,
+    source_url: str | None = None,
+    extraction_mode: str | None = None,
+) -> dict[str, Any]:
+    mode = normalize_extraction_mode(extraction_mode)
+    if mode in {"groq", "auto"}:
+        try:
+            return extract_with_groq_from_text(raw_text, source_url=source_url)
+        except RuntimeError:
+            if mode == "groq":
+                raise
+    return extract_from_job_text(raw_text, source_url=source_url)
 
 
 class InternlyHandler(BaseHTTPRequestHandler):
@@ -1965,7 +2291,11 @@ class InternlyHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/health":
-            mode = DEFAULT_EXTRACTION_MODE if DEFAULT_EXTRACTION_MODE in {"local", "gemini", "auto"} else "local"
+            mode = (
+                DEFAULT_EXTRACTION_MODE
+                if DEFAULT_EXTRACTION_MODE in {"local", "gemini", "groq", "auto"}
+                else "local"
+            )
             self._send_json(
                 HTTPStatus.OK,
                 {
@@ -1974,6 +2304,8 @@ class InternlyHandler(BaseHTTPRequestHandler):
                     "extraction_mode_default": mode,
                     "gemini_configured": bool(GEMINI_API_KEY),
                     "gemini_model": GEMINI_MODEL,
+                    "groq_configured": bool(GROQ_API_KEY),
+                    "groq_model": GROQ_MODEL,
                 },
             )
             return
@@ -2233,7 +2565,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 return
             try:
                 extracted = fetch_and_extract_from_link(url, extraction_mode=extraction_mode)
-            except ValueError as error:
+            except (ValueError, RuntimeError) as error:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
                     {"ok": False, "error": str(error)},
@@ -2335,10 +2667,19 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 return
             raw_text = clean_text(payload.get("text"), max_len=9000)
             source_url = clean_text(payload.get("source_url"), max_len=800)
+            extraction_mode = clean_text(payload.get("extraction_mode"), max_len=24)
             if not raw_text:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "Provide `text`."})
                 return
-            extracted = extract_from_job_text(raw_text, source_url=source_url)
+            try:
+                extracted = extract_from_text_with_mode(
+                    raw_text,
+                    source_url=source_url,
+                    extraction_mode=extraction_mode,
+                )
+            except (ValueError, RuntimeError) as error:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
+                return
             self._send_json(HTTPStatus.OK, {"ok": True, "extracted": extracted})
             return
 
@@ -2513,6 +2854,8 @@ class InternlyHandler(BaseHTTPRequestHandler):
         deadline_time = parse_any_time(deadline_time_raw) if deadline_time_raw else None
         if deadline_time_raw and not deadline_time:
             deadline_time = extract_time_from_text(deadline_time_raw)
+        if not deadline_time and deadline_raw:
+            deadline_time = extract_time_from_text(deadline_raw)
         if deadline_time_raw and not deadline_time:
             raise ValueError("`deadline_time` must be a valid time (e.g. 17:30 or 5:30 PM).")
 
@@ -2596,6 +2939,13 @@ class InternlyHandler(BaseHTTPRequestHandler):
                     updates["deadline"] = fallback
                 else:
                     raise ValueError("`deadline` must be a valid date.")
+            if (
+                "deadline_time" not in payload
+                and updates.get("deadline_time") is None
+            ):
+                fallback_time = extract_time_from_text(str(payload.get("deadline")))
+                if fallback_time:
+                    updates["deadline_time"] = fallback_time
         if "deadline_time" in payload and clean_text(payload.get("deadline_time"), max_len=32):
             if updates.get("deadline_time") is None:
                 fallback = extract_time_from_text(str(payload.get("deadline_time")))

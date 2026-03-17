@@ -161,41 +161,55 @@
             <form id="linkImportForm" class="stack-form">
               <label>
                 Job URL (HTML, PDF, or Image)
-                <input id="linkUrl" placeholder="https://company.com/jobs/..." required />
+                <input id="linkUrl" placeholder="https://company.com/jobs/..." />
+              </label>
+              <label>
+                Or Paste Job Text
+                <textarea
+                  id="linkText"
+                  rows="5"
+                  placeholder="Paste a job description here and extract fields directly."
+                ></textarea>
               </label>
               <label>
                 Extraction Mode
                 <select id="linkExtractionMode">
                   <option value="local" selected>Local OCR</option>
-                  <option value="auto">Auto (Gemini if configured)</option>
+                  <option value="auto">Auto (Gemini/Groq if configured)</option>
                   <option value="gemini">Gemini 2.5 Flash</option>
+                  <option value="groq">Groq</option>
                 </select>
               </label>
               <button type="submit">Extract Fields</button>
+              <div id="linkExtractProgress" class="extract-progress hidden" role="status" aria-live="polite">
+                <div class="extract-progress-head">
+                  <span id="linkExtractProgressText">Extracting fields...</span>
+                  <span id="linkExtractProgressMode" class="extract-progress-mode"></span>
+                </div>
+                <div class="extract-progress-track">
+                  <span class="extract-progress-fill"></span>
+                </div>
+              </div>
             </form>
-            <p class="help-text">
-              URL extraction auto-detects page, PDF, and image links. Gemini mode needs
-              <code>GEMINI_API_KEY</code> on the server.
-            </p>
           </section>
 
-          <section class="card">
+          <section class="card" id="importFileCard">
             <div class="section-head">
               <h2>Import File</h2>
             </div>
             <form id="screenshotForm" class="stack-form">
-              <label>
-                Upload PDF or Image
+              <div class="upload-field">
+                <label class="upload-field-label">Upload PDF or Image</label>
                 <div
                   id="fileDropZone"
                   class="file-drop-zone"
                   role="button"
                   tabindex="0"
-                  aria-label="Drag and drop a PDF or image, click to choose a file, or press Control+V to paste an image"
+                  aria-label="Drag and drop a PDF or image, or click to choose a file"
                 >
                   <p class="file-drop-zone-title">Drag and drop PDF or image here</p>
                   <p class="file-drop-zone-subtitle">Click to browse from your device</p>
-                  <p class="file-drop-zone-subtitle">or press Ctrl+V to paste an image</p>
+                  <p class="file-drop-zone-subtitle">or hover/click the Import File card and press Ctrl+V to paste</p>
                   <p id="fileDropZoneName" class="file-drop-zone-name">No file selected</p>
                 </div>
                 <input
@@ -204,21 +218,27 @@
                   type="file"
                   accept=".pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/tiff"
                 />
-              </label>
+              </div>
               <label>
                 Extraction Mode
                 <select id="fileExtractionMode">
                   <option value="local" selected>Local OCR</option>
-                  <option value="auto">Auto (Gemini if configured)</option>
+                  <option value="auto">Auto (Gemini/Groq if configured)</option>
                   <option value="gemini">Gemini 2.5 Flash</option>
+                  <option value="groq">Groq</option>
                 </select>
               </label>
               <button type="submit">Extract Fields</button>
+              <div id="fileExtractProgress" class="extract-progress hidden" role="status" aria-live="polite">
+                <div class="extract-progress-head">
+                  <span id="fileExtractProgressText">Extracting fields...</span>
+                  <span id="fileExtractProgressMode" class="extract-progress-mode"></span>
+                </div>
+                <div class="extract-progress-track">
+                  <span class="extract-progress-fill"></span>
+                </div>
+              </div>
             </form>
-            <p class="help-text">
-              Works with PDF and images. Best results with <code>pdftotext</code>, <code>pdftoppm</code>, and
-              <code>tesseract</code> installed, or Gemini mode with <code>GEMINI_API_KEY</code>.
-            </p>
           </section>
         </aside>
       </section>
