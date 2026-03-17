@@ -10,10 +10,11 @@ Internly is a focused pipeline for internship and graduate-role tracking with bu
 ## What Internly Does
 
 - Tracks roles by company, position, deadline, optional time, status, notes, and source link.
+- Captures deadline time in Quick Add when applicable (`HH:MM`).
 - Extracts useful fields from job links (HTML, PDF, and image links auto-detected).
 - Extracts from uploaded PDFs and screenshots using OCR fallback where needed.
 - Supports secure sign-in and guest mode.
-- Exports your data to a structured Excel spreadsheet.
+- Exports your data to a structured Excel spreadsheet, including deadline date/time columns.
 
 ## Product Flow
 
