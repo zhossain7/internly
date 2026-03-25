@@ -53,7 +53,8 @@ function sanitize(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#x27;");
 }
 
 function formatStatusLabel(status) {
@@ -135,7 +136,9 @@ function renderDeadlineCell(deadline, deadlineTime = null) {
 
 function sourceCell(url) {
   if (!url) return "";
-  return `<a class="link" href="${sanitize(url)}" target="_blank" rel="noopener noreferrer">open</a>`;
+  const safe = String(url);
+  if (!safe.startsWith("https://") && !safe.startsWith("http://")) return "";
+  return `<a class="link" href="${sanitize(safe)}" target="_blank" rel="noopener noreferrer">open</a>`;
 }
 
 function formatUpdated(updatedAt) {
@@ -213,7 +216,7 @@ function saveGuestApplications(items) {
   try {
     window.sessionStorage.setItem(GUEST_APPS_KEY, JSON.stringify(items));
   } catch (error) {
-    /* no-op */
+    showToast("Storage full — guest data could not be saved.", true);
   }
 }
 
@@ -392,7 +395,7 @@ function renderRows(viewRows) {
           item.deadline_time
         )}</td>
         <td>
-          <select data-status-id="${item.id}" class="table-status ${statusClassName(
+          <select data-status-id="${Number(item.id)}" class="table-status ${statusClassName(
             item.status
           )}">
             ${STATUSES.map(
@@ -405,7 +408,7 @@ function renderRows(viewRows) {
         </td>
         <td>${sourceCell(item.source_url)}</td>
         <td>${sanitize(formatUpdated(item.updated_at))}</td>
-        <td><button data-delete-id="${item.id}" class="danger">Delete</button></td>
+        <td><button data-delete-id="${Number(item.id)}" class="danger">Delete</button></td>
       </tr>
     `
     )
@@ -484,12 +487,14 @@ appsTbody.addEventListener("change", async (event) => {
   if (!(target instanceof HTMLSelectElement)) return;
   const id = target.dataset.statusId;
   if (!id) return;
+  const safeId = parseInt(id, 10);
+  if (!Number.isFinite(safeId)) return;
   const nextStatus = normalizeStatusForUI(target.value);
   applyStatusSelectStyle(target, nextStatus);
 
   try {
     if (sessionState.is_guest) {
-      const index = appsCache.findIndex((item) => String(item.id) === id);
+      const index = appsCache.findIndex((item) => item.id === safeId);
       if (index >= 0) {
         appsCache[index].status = nextStatus;
         appsCache[index].updated_at = new Date().toISOString();
@@ -500,11 +505,11 @@ appsTbody.addEventListener("change", async (event) => {
       return;
     }
 
-    await api(`/api/applications/${id}`, {
+    await api(`/api/applications/${safeId}`, {
       method: "PATCH",
       body: JSON.stringify({ status: target.value }),
     });
-    const index = appsCache.findIndex((item) => String(item.id) === id);
+    const index = appsCache.findIndex((item) => item.id === safeId);
     if (index >= 0) {
       appsCache[index].status = nextStatus;
       appsCache[index].updated_at = new Date().toISOString();
@@ -513,7 +518,7 @@ appsTbody.addEventListener("change", async (event) => {
     showToast("Status updated.");
   } catch (error) {
     showToast(error.message, true);
-    await loadApplications();
+    await loadApplications().catch((err) => console.error("Reload failed:", err));
   }
 });
 
@@ -522,21 +527,23 @@ appsTbody.addEventListener("click", async (event) => {
   if (!(target instanceof HTMLButtonElement)) return;
   const id = target.dataset.deleteId;
   if (!id) return;
+  const safeId = parseInt(id, 10);
+  if (!Number.isFinite(safeId)) return;
 
   const confirmed = window.confirm("Delete this application?");
   if (!confirmed) return;
 
   try {
     if (sessionState.is_guest) {
-      appsCache = appsCache.filter((item) => String(item.id) !== id);
+      appsCache = appsCache.filter((item) => item.id !== safeId);
       saveGuestApplications(appsCache);
       renderAll();
       showToast("Guest application removed.");
       return;
     }
 
-    await api(`/api/applications/${id}`, { method: "DELETE" });
-    appsCache = appsCache.filter((item) => String(item.id) !== id);
+    await api(`/api/applications/${safeId}`, { method: "DELETE" });
+    appsCache = appsCache.filter((item) => item.id !== safeId);
     renderAll();
     showToast("Application deleted.");
   } catch (error) {
@@ -567,4 +574,4 @@ async function init() {
   }
 }
 
-init();
+init().catch((err) => console.error("Init failed:", err));

@@ -125,4 +125,4 @@ authLogoutBtn?.addEventListener("click", async () => {
   }
 });
 
-refreshSession();
+refreshSession().catch((err) => console.error("Session refresh failed:", err));

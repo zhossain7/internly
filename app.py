@@ -5,17 +5,21 @@ import binascii
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -25,6 +29,8 @@ from typing import Any, Iterable
 from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger(__name__)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -143,10 +149,46 @@ EXCEL_COLUMN_WIDTHS = (9, 24, 30, 18, 16, 20, 14, 16, 46, 18, 58, 24, 24)
 
 SESSION_STORE: dict[str, dict[str, Any]] = {}
 SESSION_STORE_LOCK = threading.Lock()
+SESSION_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+SESSION_MAX_SIZE = 5_000
+
+# ─── Auth rate limiting ───
+_AUTH_FAILURES: dict[str, list[float]] = {}
+_AUTH_FAILURES_LOCK = threading.Lock()
+AUTH_MAX_ATTEMPTS = 10
+AUTH_WINDOW_SECONDS = 60.0
+
+# ─── SSRF blocklist — private / loopback / link-local ranges ───
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+# ─── Status aliases (module-level, not rebuilt per call) ───
+_STATUS_ALIASES = {
+    "ac": "accepted",
+    "assessmentcentre": "accepted",
+    "assessment_center": "accepted",
+    "assessment_centre": "accepted",
+}
+
+# ─── Allowed application update columns (static allowlist) ───
+_APPLICATION_UPDATE_COLUMNS = frozenset({
+    "company", "role", "location", "job_type", "deadline",
+    "deadline_time", "status", "source_url", "compensation",
+    "notes", "updated_at",
+})
 
 
 def utc_now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def normalize_space(value: str) -> str:
@@ -188,13 +230,7 @@ def ensure_status(value: Any) -> str:
     if not status:
         return "wishlist"
     lowered = status.lower().replace("-", "_").replace(" ", "_")
-    status_aliases = {
-        "ac": "accepted",
-        "assessmentcentre": "accepted",
-        "assessment_center": "accepted",
-        "assessment_centre": "accepted",
-    }
-    lowered = status_aliases.get(lowered, lowered)
+    lowered = _STATUS_ALIASES.get(lowered, lowered)
     if lowered not in ALLOWED_STATUSES:
         raise ValueError(
             f"Invalid status '{status}'. Use one of: {', '.join(sorted(ALLOWED_STATUSES))}."
@@ -302,12 +338,30 @@ def extract_unique_time_from_text(value: str) -> str | None:
     return None
 
 
+def _is_ssrf_blocked_host(host: str) -> bool:
+    """Return True if the host resolves to a private/loopback/link-local address."""
+    try:
+        results = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for *_, addr in results:
+            ip = ipaddress.ip_address(addr[0])
+            if any(ip in net for net in _BLOCKED_NETWORKS):
+                return True
+    except (socket.gaierror, ValueError):
+        return True  # Fail closed: if we can't resolve, block it
+    return False
+
+
 def is_valid_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
-    except Exception:
+    except ValueError:
         return False
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    host = parsed.hostname or ""
+    if not host or _is_ssrf_blocked_host(host):
+        return False
+    return True
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
@@ -2124,12 +2178,33 @@ def extract_from_text_with_mode(
     return extract_from_job_text(raw_text, source_url=source_url)
 
 
+def _check_auth_rate_limit(ip: str) -> bool:
+    """Return True if the request is allowed, False if rate-limited."""
+    now = time.time()
+    with _AUTH_FAILURES_LOCK:
+        recent = [t for t in _AUTH_FAILURES.get(ip, []) if now - t < AUTH_WINDOW_SECONDS]
+        _AUTH_FAILURES[ip] = recent
+        return len(recent) < AUTH_MAX_ATTEMPTS
+
+
+def _record_auth_failure(ip: str) -> None:
+    now = time.time()
+    with _AUTH_FAILURES_LOCK:
+        attempts = _AUTH_FAILURES.get(ip, [])
+        attempts.append(now)
+        _AUTH_FAILURES[ip] = attempts
+
+
 class InternlyHandler(BaseHTTPRequestHandler):
     server_version = "InternlyHTTP/0.2.0"
 
-    def log_message(self, format: str, *args: Any) -> None:
-        # Keep logging concise for local development.
-        print(f"[{self.log_date_time_string()}] {self.address_string()} - {format % args}")
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        logger.debug("%s - %s", self.address_string(), format % args)
+
+    def _add_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
 
     def _send_json(
         self,
@@ -2139,12 +2214,18 @@ class InternlyHandler(BaseHTTPRequestHandler):
         extra_headers: list[tuple[str, str]] | None = None,
     ) -> None:
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        port = self.server.server_address[1]
+        allowed_origin = f"http://127.0.0.1:{port}"
+        origin = self.headers.get("Origin", "")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+        if origin == allowed_origin:
+            self.send_header("Access-Control-Allow-Origin", allowed_origin)
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+            self.send_header("Vary", "Origin")
+        self._add_security_headers()
         if extra_headers:
             for key, value in extra_headers:
                 self.send_header(key, value)
@@ -2157,10 +2238,10 @@ class InternlyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _build_session_cookie(self, token: str) -> str:
-        return f"{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax"
+        return f"{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Secure"
 
     def _build_clear_session_cookie(self) -> str:
-        return f"{SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+        return f"{SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0"
 
     def _read_session_token(self) -> str | None:
         raw_cookie = self.headers.get("Cookie")
@@ -2183,11 +2264,28 @@ class InternlyHandler(BaseHTTPRequestHandler):
             return {}
         with SESSION_STORE_LOCK:
             payload = SESSION_STORE.get(token)
-            return dict(payload) if payload else {}
+            if not payload:
+                return {}
+            # Enforce session TTL
+            created_at = payload.get("created_at", "")
+            if created_at:
+                try:
+                    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    age = (datetime.now(timezone.utc) - created).total_seconds()
+                    if age > SESSION_TTL_SECONDS:
+                        SESSION_STORE.pop(token, None)
+                        return {}
+                except (ValueError, TypeError):
+                    pass
+            return dict(payload)
 
     def _set_session_payload(self, payload: dict[str, Any]) -> str:
         token = secrets.token_urlsafe(32)
         with SESSION_STORE_LOCK:
+            # Evict oldest entry if at capacity to prevent memory exhaustion
+            if len(SESSION_STORE) >= SESSION_MAX_SIZE:
+                oldest = next(iter(SESSION_STORE))
+                SESSION_STORE.pop(oldest, None)
             SESSION_STORE[token] = payload
         return token
 
@@ -2230,6 +2328,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_types.get(suffix, "application/octet-stream"))
         self.send_header("Content-Length", str(len(content)))
+        self._add_security_headers()
         self.end_headers()
         self.wfile.write(content)
 
@@ -2280,10 +2379,15 @@ class InternlyHandler(BaseHTTPRequestHandler):
         return int(match.group(1))
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        port = self.server.server_address[1]
+        allowed_origin = f"http://127.0.0.1:{port}"
+        origin = self.headers.get("Origin", "")
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+        if origin == allowed_origin:
+            self.send_header("Access-Control-Allow-Origin", allowed_origin)
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+            self.send_header("Vary", "Origin")
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
@@ -2291,6 +2395,9 @@ class InternlyHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/health":
+            if not self._session_payload():
+                self._send_json(HTTPStatus.OK, {"ok": True})
+                return
             mode = (
                 DEFAULT_EXTRACTION_MODE
                 if DEFAULT_EXTRACTION_MODE in {"local", "gemini", "groq", "auto"}
@@ -2450,6 +2557,10 @@ class InternlyHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/auth/register":
+            client_ip = self.client_address[0]
+            if not _check_auth_rate_limit(client_ip):
+                self._send_json(HTTPStatus.TOO_MANY_REQUESTS, {"ok": False, "error": "Too many attempts. Try again later."})
+                return
             username = clean_text(payload.get("username"), max_len=80)
             password_raw = payload.get("password")
             if not username or len(username) < 3:
@@ -2458,10 +2569,10 @@ class InternlyHandler(BaseHTTPRequestHandler):
                     {"ok": False, "error": "Username must be at least 3 characters."},
                 )
                 return
-            if not isinstance(password_raw, str) or len(password_raw) < 8:
+            if not isinstance(password_raw, str) or len(password_raw) < 8 or len(password_raw) > 1024:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
-                    {"ok": False, "error": "Password must be at least 8 characters."},
+                    {"ok": False, "error": "Password must be 8–1024 characters."},
                 )
                 return
             try:
@@ -2485,6 +2596,10 @@ class InternlyHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/auth/login":
+            client_ip = self.client_address[0]
+            if not _check_auth_rate_limit(client_ip):
+                self._send_json(HTTPStatus.TOO_MANY_REQUESTS, {"ok": False, "error": "Too many attempts. Try again later."})
+                return
             username = clean_text(payload.get("username"), max_len=80)
             password_raw = payload.get("password")
             if not username or not isinstance(password_raw, str):
@@ -2495,6 +2610,7 @@ class InternlyHandler(BaseHTTPRequestHandler):
                 return
             user = self._authenticate_user(username.lower(), password_raw)
             if not user:
+                _record_auth_failure(client_ip)
                 self._send_json(
                     HTTPStatus.UNAUTHORIZED,
                     {"ok": False, "error": "Invalid username or password."},
@@ -2795,6 +2911,8 @@ class InternlyHandler(BaseHTTPRequestHandler):
         finally:
             conn.close()
         if not row:
+            # Always run the hash to prevent username enumeration via timing
+            verify_password(password, salt_hex="00" * 16, expected_hash_hex="00" * 32, iterations=PASSWORD_HASH_ITERATIONS)
             return None
         if not verify_password(
             password,
@@ -2960,7 +3078,11 @@ class InternlyHandler(BaseHTTPRequestHandler):
             raise ValueError("No supported fields provided for update.")
 
         updates["updated_at"] = utc_now_iso()
-        set_clause = ", ".join([f"{column} = ?" for column in updates.keys()])
+        # Validate all column names against the static allowlist before interpolation
+        unknown = set(updates.keys()) - _APPLICATION_UPDATE_COLUMNS
+        if unknown:
+            raise ValueError(f"Unexpected update fields: {unknown}")
+        set_clause = ", ".join([f"{col} = ?" for col in updates.keys()])
         params = list(updates.values()) + [app_id]
 
         conn = open_db()
@@ -2994,17 +3116,18 @@ class InternlyHandler(BaseHTTPRequestHandler):
 
 
 def run(host: str = "127.0.0.1", port: int = 3001) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     init_db()
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((host, port), InternlyHandler)
-    print(f"Internly running at http://{host}:{port}")
+    logger.info("Internly running at http://%s:%s", host, port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
-        print("Server stopped.")
+        logger.info("Server stopped.")
 
 
 if __name__ == "__main__":

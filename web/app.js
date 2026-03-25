@@ -230,7 +230,8 @@ function sanitize(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#x27;");
 }
 
 function fillForm(extracted) {
@@ -373,7 +374,7 @@ function saveGuestApplications(items) {
   try {
     window.sessionStorage.setItem(GUEST_APPS_KEY, JSON.stringify(items));
   } catch (error) {
-    /* no-op */
+    showToast("Storage full — guest data could not be saved.", true);
   }
 }
 
@@ -410,7 +411,7 @@ async function logoutAndReturnHome() {
 function statusCell(application) {
   const selectedStatus = normalizeStatusForUI(application.status);
   return `
-    <select data-status-id="${application.id}" class="table-status ${statusClassName(
+    <select data-status-id="${Number(application.id)}" class="table-status ${statusClassName(
       selectedStatus
     )}">
       ${STATUSES.map(
@@ -425,7 +426,9 @@ function statusCell(application) {
 
 function sourceCell(url) {
   if (!url) return "";
-  return `<a class="link" href="${sanitize(url)}" target="_blank" rel="noopener noreferrer">open</a>`;
+  const safe = String(url);
+  if (!safe.startsWith("https://") && !safe.startsWith("http://")) return "";
+  return `<a class="link" href="${sanitize(safe)}" target="_blank" rel="noopener noreferrer">open</a>`;
 }
 
 function renderDeadlineCell(deadline, deadlineTime = null) {
@@ -766,7 +769,7 @@ function renderRows(applications) {
         <td>${statusCell(item)}</td>
         <td>${sourceCell(item.source_url)}</td>
         <td>
-          <button data-delete-id="${item.id}" class="danger">Delete</button>
+          <button data-delete-id="${Number(item.id)}" class="danger">Delete</button>
         </td>
       </tr>
     `
@@ -1271,9 +1274,11 @@ tbody.addEventListener("change", async (event) => {
   if (!(target instanceof HTMLSelectElement)) return;
   const id = target.dataset.statusId;
   if (!id) return;
+  const safeId = parseInt(id, 10);
+  if (!Number.isFinite(safeId)) return;
   try {
     if (sessionState.is_guest) {
-      const index = applicationsCache.findIndex((item) => String(item.id) === id);
+      const index = applicationsCache.findIndex((item) => item.id === safeId);
       if (index >= 0) {
         applicationsCache[index].status = normalizeStatusForUI(target.value);
         applicationsCache[index].updated_at = new Date().toISOString();
@@ -1285,13 +1290,13 @@ tbody.addEventListener("change", async (event) => {
       return;
     }
 
-    await api(`/api/applications/${id}`, {
+    await api(`/api/applications/${safeId}`, {
       method: "PATCH",
       body: JSON.stringify({ status: target.value }),
     });
     const nextStatus = normalizeStatusForUI(target.value);
     applyStatusSelectStyle(target, nextStatus);
-    const index = applicationsCache.findIndex((item) => String(item.id) === id);
+    const index = applicationsCache.findIndex((item) => item.id === safeId);
     if (index >= 0) {
       applicationsCache[index].status = nextStatus;
       applicationsCache[index].updated_at = new Date().toISOString();
@@ -1301,7 +1306,7 @@ tbody.addEventListener("change", async (event) => {
     showToast("Status updated.");
   } catch (error) {
     showToast(error.message, true);
-    await loadApplications();
+    await loadApplications().catch((err) => console.error("Reload failed:", err));
   }
 });
 
@@ -1310,12 +1315,14 @@ tbody.addEventListener("click", async (event) => {
   if (!(target instanceof HTMLButtonElement)) return;
   const id = target.dataset.deleteId;
   if (!id) return;
+  const safeId = parseInt(id, 10);
+  if (!Number.isFinite(safeId)) return;
   const confirmed = window.confirm("Delete this application?");
   if (!confirmed) return;
 
   try {
     if (sessionState.is_guest) {
-      applicationsCache = applicationsCache.filter((item) => String(item.id) !== id);
+      applicationsCache = applicationsCache.filter((item) => item.id !== safeId);
       saveGuestApplications(applicationsCache);
       renderRows(getFilteredApplications());
       renderMomentumPanel(applicationsCache);
@@ -1323,7 +1330,7 @@ tbody.addEventListener("click", async (event) => {
       return;
     }
 
-    await api(`/api/applications/${id}`, { method: "DELETE" });
+    await api(`/api/applications/${safeId}`, { method: "DELETE" });
     await loadApplications();
     showToast("Application deleted.");
   } catch (error) {
@@ -1364,4 +1371,4 @@ async function init() {
   }
 }
 
-init();
+init().catch((err) => console.error("Init failed:", err));
