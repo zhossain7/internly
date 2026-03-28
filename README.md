@@ -36,7 +36,7 @@ python app.py
 
 3. Open `http://127.0.0.1:8000`.
 
-Internly creates `internly.db` automatically in the project root. You can override the path with the `INTERNLY_DB_PATH` env var.
+Internly stores its database at `/home/ubuntu/internly-data/internly.db` by default. Override the path with the `INTERNLY_DB_PATH` env var.
 
 ## Extraction Stack (Recommended)
 
@@ -48,26 +48,24 @@ If these tools are not installed, you can still review and enter details manuall
 
 ## AI Extraction Modes
 
-- `local`: local parser + OCR/PDF tooling.
-- `gemini`: Gemini API for PDF/image extraction.
-- `groq`: Groq API extraction (default model: `llama-3.3-70b-versatile`).
-- `granite`: local Ollama extraction (configurable model via `OLLAMA_MODEL`).
+- `groq`: Groq API extraction (default model: `llama-3.3-70b-versatile`). Default.
+- `gemini`: Gemini API for PDF/image extraction (model: `gemini-2.5-flash`).
 - `auto`: uses Gemini if configured, then Groq if configured, then local.
+- `local`: local parser + OCR/PDF tooling only, no AI API calls.
+- `granite`: local Ollama extraction (configurable via `OLLAMA_MODEL`). Not recommended — requires a running Ollama instance with a compatible vision model installed.
 
 Set via env vars in a `.env` file in the project root:
 
 ```env
-EXTRACTION_MODE=auto
+EXTRACTION_MODE=groq
 GEMINI_API_KEY=your_key_here
 GROQ_API_KEY=your_key_here
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=your_model_here
 INTERNLY_DB_PATH=/path/to/internly.db
 ```
 
 ## Google Calendar Sync
 
-Internly can sync application deadlines to a Google Calendar automatically. See `internly-gcal-sync/` for the sync script and setup instructions. Requires a Google Cloud project with Calendar API enabled and a one-time OAuth setup.
+Internly can sync application deadlines to a Google Calendar automatically. The sync script lives in a separate directory at `/home/ubuntu/internly-gcal-sync/` (not inside this repo). Requires a Google Cloud project with Calendar API enabled and a one-time OAuth setup via `auth_setup.py`.
 
 ## Notes
 
