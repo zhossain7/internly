@@ -67,38 +67,48 @@
           <p>Login for saved dashboards, or continue as guest for temporary tracking.</p>
         </div>
         <div class="auth-grid">
-          <form id="loginForm" class="auth-form">
-            <h3>Login</h3>
-            <label>
-              Username
-              <input id="loginUsername" name="username" autocomplete="username" required />
-            </label>
-            <label>
-              Password
-              <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
-            </label>
-            <button type="submit">Login</button>
-          </form>
+          <section id="loginPanel" class="auth-panel">
+            <form id="loginForm" class="auth-form">
+              <h3>Login</h3>
+              <label>
+                Username
+                <input id="loginUsername" name="username" autocomplete="username" required />
+              </label>
+              <label>
+                Password
+                <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
+              </label>
+              <button type="submit">Login</button>
+            </form>
+            <p class="auth-switch">
+              <button id="showRegisterBtn" class="auth-link-btn" type="button">Click here to register</button>
+            </p>
+          </section>
 
-          <form id="registerForm" class="auth-form">
-            <h3>Create Account</h3>
-            <label>
-              Username
-              <input id="registerUsername" name="username" autocomplete="username" required />
-            </label>
-            <label>
-              Password (min 8)
-              <input
-                id="registerPassword"
-                name="password"
-                type="password"
-                minlength="8"
-                autocomplete="new-password"
-                required
-              />
-            </label>
-            <button type="submit">Create Account</button>
-          </form>
+          <section id="registerPanel" class="auth-panel hidden">
+            <form id="registerForm" class="auth-form">
+              <h3>Create Account</h3>
+              <label>
+                Username
+                <input id="registerUsername" name="username" autocomplete="username" required />
+              </label>
+              <label>
+                Password (min 8)
+                <input
+                  id="registerPassword"
+                  name="password"
+                  type="password"
+                  minlength="8"
+                  autocomplete="new-password"
+                  required
+                />
+              </label>
+              <button type="submit">Create Account</button>
+            </form>
+            <p class="auth-switch">
+              <button id="showLoginBtn" class="auth-link-btn" type="button">Click here to login</button>
+            </p>
+          </section>
         </div>
         <div class="auth-row">
           <button id="guestModeBtn" class="secondary" type="button">Continue As Guest</button>

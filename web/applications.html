@@ -79,8 +79,8 @@
           <label>
             Sort By
             <select id="appsSort">
-              <option value="updated_desc">Recently Updated</option>
               <option value="deadline_asc">Nearest Deadline</option>
+              <option value="updated_desc">Recently Updated</option>
               <option value="company_asc">Company (A-Z)</option>
               <option value="status_asc">Status (A-Z)</option>
             </select>
@@ -146,6 +146,21 @@
     </main>
 
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+    <dialog id="deadlineDialog">
+      <form id="deadlineDialogForm" method="dialog">
+        <p id="deadlineDialogMsg">Status updated. Update the deadline?</p>
+        <div class="deadline-dialog-row">
+          <input type="date" id="deadlineDialogDate" />
+          <input type="time" id="deadlineDialogTime" placeholder="Time (optional)" />
+        </div>
+        <div class="deadline-dialog-actions">
+          <button type="submit" value="update" class="btn-primary">Update Deadline</button>
+          <button type="submit" value="keep">Keep Existing</button>
+        </div>
+      </form>
+    </dialog>
+
     <script src="/applications.js" defer></script>
   </body>
 </html>

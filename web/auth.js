@@ -1,5 +1,9 @@
 const loginForm = document.getElementById("loginForm");
 const registerForm = document.getElementById("registerForm");
+const loginPanel = document.getElementById("loginPanel");
+const registerPanel = document.getElementById("registerPanel");
+const showRegisterBtn = document.getElementById("showRegisterBtn");
+const showLoginBtn = document.getElementById("showLoginBtn");
 const guestModeBtn = document.getElementById("guestModeBtn");
 const authLogoutBtn = document.getElementById("authLogoutBtn");
 const continueBtn = document.getElementById("continueBtn");
@@ -44,6 +48,12 @@ function setFormDisabled(disabled) {
   });
 }
 
+function setAuthView(view) {
+  const showLogin = view !== "register";
+  loginPanel?.classList.toggle("hidden", !showLogin);
+  registerPanel?.classList.toggle("hidden", showLogin);
+}
+
 function renderSession(session) {
   if (!continueBtn || !authLogoutBtn || !guestModeBtn) return;
   const authenticated = !!session.authenticated;
@@ -53,6 +63,7 @@ function renderSession(session) {
   setFormDisabled(authenticated);
 
   if (!authenticated) {
+    setAuthView("login");
     showAuthMessage("Login or create an account. You can also continue as guest.");
     return;
   }
@@ -105,6 +116,16 @@ registerForm?.addEventListener("submit", async (event) => {
   } catch (error) {
     showAuthMessage(error.message, true);
   }
+});
+
+showRegisterBtn?.addEventListener("click", () => {
+  setAuthView("register");
+  showAuthMessage("");
+});
+
+showLoginBtn?.addEventListener("click", () => {
+  setAuthView("login");
+  showAuthMessage("");
 });
 
 guestModeBtn?.addEventListener("click", async () => {

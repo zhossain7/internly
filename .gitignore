@@ -3,3 +3,4 @@ __pycache__/
 internly.db
 *.sqlite
 *.sqlite3
+.env

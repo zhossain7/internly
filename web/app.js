@@ -78,6 +78,10 @@ const FILE_IMPORT_MIME_TO_EXTENSION = {
   "image/tiff": ".tiff",
 };
 let applicationsCache = [];
+const SORT_STORAGE_KEY = "internly-dashboard-sort";
+const _savedSort = JSON.parse(window.localStorage.getItem(SORT_STORAGE_KEY) || "null");
+let sortKey = _savedSort?.key ?? "deadline";
+let sortDir = _savedSort?.dir ?? 1;
 let selectedImportFile = null;
 let fileDropDragDepth = 0;
 let importFileCardHovered = false;
@@ -253,7 +257,7 @@ function formatExtractionModeLabel(mode) {
   const normalized = String(mode || "local").toLowerCase();
   if (normalized === "gemini") return "Gemini 2.5 Flash";
   if (normalized === "groq") return "Groq";
-  if (normalized === "granite") return "Granite (Ollama Local)";
+  if (normalized === "granite") return "DeepSeek R1 14b (Ollama Local)";
   if (normalized === "auto") return "Auto";
   return "Local OCR";
 }
@@ -432,36 +436,66 @@ function sourceCell(url) {
   return `<a class="link" href="${sanitize(safe)}" target="_blank" rel="noopener noreferrer">open</a>`;
 }
 
-function renderDeadlineCell(deadline, deadlineTime = null) {
-  const timeLabel = sanitize(deadlineTime || "");
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const MONTH_NAMES_FULL = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+function formatDeadlineDisplay(deadline, deadlineTime) {
+  if (!deadline) return { top: "No deadline", sub: "", time: sanitize(deadlineTime || "") };
   const parsed = parseDeadline(deadline);
+  if (!parsed) return { top: sanitize(deadline), sub: "", time: sanitize(deadlineTime || "") };
+  const day = parsed.getDate();
+  const month = MONTH_NAMES_FULL[parsed.getMonth()];
+  const year = parsed.getFullYear();
+  return { top: `${day} ${month}`, sub: String(year), time: sanitize(deadlineTime || "") };
+}
+
+function renderDeadlineCell(deadline, deadlineTime = null) {
+  const parsed = parseDeadline(deadline);
+  const { top, sub, time } = formatDeadlineDisplay(deadline, deadlineTime);
   if (!parsed) {
-    if (!deadline) return timeLabel;
-    if (!timeLabel) return sanitize(deadline);
-    return `${sanitize(deadline)} ${timeLabel}`;
+    return `<div class="deadline-cell"><span class="deadline-no-date">${top}</span></div>`;
   }
   const days = getDaysUntil(parsed);
   const urgencyClass = getUrgencyClass(days);
   const label = getUrgencyLabel(days);
   const classAttr = urgencyClass ? ` ${urgencyClass}` : "";
-  const dateLabel = timeLabel
-    ? `${sanitize(deadline)} ${timeLabel}`
-    : sanitize(deadline);
+  const timePart = time ? `<span class="deadline-time-label">${time}</span>` : "";
   return `
     <div class="deadline-cell">
-      <span>${dateLabel}</span>
+      <span class="deadline-main">${sanitize(top)}${timePart}</span>
+      <span class="deadline-year">${sanitize(sub)}</span>
       <span class="deadline-badge${classAttr}">${sanitize(label)}</span>
     </div>
   `;
 }
 
 function getFilteredApplications() {
-  if (!filterStatus) return applicationsCache;
-  const filter = filterStatus.value;
-  if (!filter) return applicationsCache;
-  return applicationsCache.filter(
-    (item) => normalizeStatusForUI(item.status) === filter
-  );
+  const base = (() => {
+    if (!filterStatus) return applicationsCache;
+    const filter = filterStatus.value;
+    if (!filter) return applicationsCache;
+    return applicationsCache.filter(
+      (item) => normalizeStatusForUI(item.status) === filter
+    );
+  })();
+
+  return [...base].sort((a, b) => {
+    let av = a[sortKey] ?? "";
+    let bv = b[sortKey] ?? "";
+    // Nulls/empty always go last regardless of sort direction
+    if (av === "" && bv !== "") return 1;
+    if (bv === "" && av !== "") return -1;
+    if (av === "" && bv === "") return 0;
+    return av < bv ? -sortDir : av > bv ? sortDir : 0;
+  });
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll("th[data-sort]").forEach((th) => {
+    const key = th.dataset.sort;
+    th.classList.toggle("sort-active", key === sortKey);
+    th.dataset.sortDir = key === sortKey ? (sortDir === 1 ? "asc" : "desc") : "";
+  });
 }
 
 function buildNextMove(items, upcomingDeadlines) {
@@ -763,10 +797,13 @@ function renderRows(applications) {
         <td>${sanitize(item.company)}</td>
         <td>${sanitize(item.role)}</td>
         <td>${sanitize(item.location || "")}</td>
-        <td class="table-deadline">${renderDeadlineCell(
-          item.deadline,
-          item.deadline_time
-        )}</td>
+        <td class="table-deadline table-deadline-edit" data-deadline-id="${Number(item.id)}">
+          <div class="deadline-display">${renderDeadlineCell(item.deadline, item.deadline_time)}</div>
+          <div class="deadline-inputs hidden">
+            <input type="date" class="deadline-date-input" value="${sanitize(item.deadline || "")}" />
+            <input type="time" class="deadline-time-input" value="${sanitize(item.deadline_time || "")}" />
+          </div>
+        </td>
         <td>${statusCell(item)}</td>
         <td>${sourceCell(item.source_url)}</td>
         <td>
@@ -860,6 +897,22 @@ if (filterStatus) {
     }
   });
 }
+
+document.querySelectorAll("th[data-sort]").forEach((th) => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (sortKey === key) {
+      sortDir *= -1;
+    } else {
+      sortKey = key;
+      sortDir = 1;
+    }
+    window.localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ key: sortKey, dir: sortDir }));
+    updateSortHeaders();
+    renderRows(getFilteredApplications());
+  });
+});
+updateSortHeaders();
 
 linkImportForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1272,6 +1325,37 @@ screenshotForm?.addEventListener("submit", (event) => {
 
 tbody.addEventListener("change", async (event) => {
   const target = event.target;
+
+  // Inline deadline edit
+  if (target.classList.contains("deadline-date-input") || target.classList.contains("deadline-time-input")) {
+    const cell = target.closest("td[data-deadline-id]");
+    if (!cell) return;
+    const safeId = parseInt(cell.dataset.deadlineId, 10);
+    if (!Number.isFinite(safeId)) return;
+    const dateVal = cell.querySelector(".deadline-date-input")?.value || null;
+    const timeVal = cell.querySelector(".deadline-time-input")?.value || null;
+    try {
+      await api(`/api/applications/${safeId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ deadline: dateVal || null, deadline_time: timeVal || null }),
+      });
+      const index = applicationsCache.findIndex((item) => item.id === safeId);
+      if (index >= 0) {
+        applicationsCache[index].deadline = dateVal || null;
+        applicationsCache[index].deadline_time = timeVal || null;
+        applicationsCache[index].updated_at = new Date().toISOString();
+      }
+      // Update display in place
+      const display = cell.querySelector(".deadline-display");
+      if (display) display.innerHTML = renderDeadlineCell(dateVal, timeVal);
+      renderMomentumPanel(applicationsCache);
+      showToast("Deadline updated.");
+    } catch (error) {
+      showToast(error.message, true);
+    }
+    return;
+  }
+
   if (!(target instanceof HTMLSelectElement)) return;
   const id = target.dataset.statusId;
   if (!id) return;
@@ -1305,9 +1389,58 @@ tbody.addEventListener("change", async (event) => {
     renderRows(getFilteredApplications());
     renderMomentumPanel(applicationsCache);
     showToast("Status updated.");
+
+    // Ask if they want to update the deadline
+    const dialog = document.getElementById("deadlineDialog");
+    const dialogForm = document.getElementById("deadlineDialogForm");
+    const dialogDate = document.getElementById("deadlineDialogDate");
+    const dialogTime = document.getElementById("deadlineDialogTime");
+    if (dialog && dialogForm) {
+      const existing = index >= 0 ? applicationsCache[index] : null;
+      dialogDate.value = existing?.deadline || "";
+      dialogTime.value = existing?.deadline_time || "";
+      dialog.showModal();
+      await new Promise((resolve) => {
+        dialogForm.onsubmit = async (e) => {
+          const choice = e.submitter?.value;
+          dialog.close();
+          if (choice === "update") {
+            const newDeadline = dialogDate.value || null;
+            const newTime = dialogTime.value || null;
+            await api(`/api/applications/${safeId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ deadline: newDeadline, deadline_time: newTime }),
+            });
+            if (index >= 0) {
+              applicationsCache[index].deadline = newDeadline;
+              applicationsCache[index].deadline_time = newTime;
+              applicationsCache[index].updated_at = new Date().toISOString();
+            }
+            renderRows(getFilteredApplications());
+            showToast("Deadline updated.");
+          }
+          resolve();
+        };
+      });
+    }
   } catch (error) {
     showToast(error.message, true);
     await loadApplications().catch((err) => console.error("Reload failed:", err));
+  }
+});
+
+tbody.addEventListener("click", (event) => {
+  const cell = event.target.closest("td.table-deadline-edit");
+  if (cell && !event.target.closest(".deadline-inputs")) {
+    const display = cell.querySelector(".deadline-display");
+    const inputs = cell.querySelector(".deadline-inputs");
+    if (display && inputs) {
+      display.classList.toggle("hidden");
+      inputs.classList.toggle("hidden");
+      if (!inputs.classList.contains("hidden")) {
+        inputs.querySelector(".deadline-date-input")?.focus();
+      }
+    }
   }
 });
 

@@ -641,7 +641,11 @@ body::after {
 .auth-grid {
   margin-top: 12px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.auth-panel {
+  display: grid;
   gap: 10px;
 }
 
@@ -657,6 +661,31 @@ body::after {
 .auth-form h3 {
   margin: 0;
   font-size: 0.95rem;
+}
+
+.auth-switch {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.auth-link-btn {
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--link);
+  font-size: inherit;
+  font-weight: 580;
+}
+
+.auth-link-btn:hover {
+  filter: none;
+  text-decoration: underline;
+}
+
+.auth-link-btn:active {
+  transform: none;
 }
 
 .auth-row {
@@ -1051,6 +1080,134 @@ textarea {
   gap: 11px;
 }
 
+.upload-field {
+  display: grid;
+  gap: 7px;
+}
+
+.upload-field-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 530;
+}
+
+.file-drop-zone {
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 12px;
+  padding: 14px 12px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-soft));
+  cursor: pointer;
+  transition: border-color 170ms ease, background-color 170ms ease, transform 170ms ease;
+}
+
+.file-drop-zone:hover {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-soft));
+}
+
+.file-drop-zone:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 76%, transparent);
+  box-shadow: var(--shadow-focus);
+}
+
+.file-drop-zone.is-dragover {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 82%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface-soft));
+  transform: translateY(-1px);
+}
+
+.file-drop-zone.has-file {
+  border-style: solid;
+}
+
+.file-drop-zone-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.file-drop-zone-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.79rem;
+}
+
+.file-drop-zone-name {
+  margin: 9px 0 0;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 560;
+  word-break: break-word;
+}
+
+.file-input-hidden {
+  display: none;
+}
+
+.extract-progress {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.extract-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.extract-progress-mode {
+  color: var(--text);
+  font-weight: 560;
+}
+
+.extract-progress-track {
+  position: relative;
+  height: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface-soft) 88%, transparent);
+}
+
+.extract-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 38%;
+  border-radius: inherit;
+  transform: translateX(-130%);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 65%, transparent),
+    color-mix(in srgb, var(--accent-2) 85%, transparent)
+  );
+}
+
+.extract-progress.is-active .extract-progress-fill {
+  animation: extract-progress-slide 1.05s ease-in-out infinite;
+}
+
+.extract-progress.is-complete .extract-progress-fill {
+  width: 100%;
+  transform: translateX(0);
+  background: color-mix(in srgb, var(--accent) 85%, transparent);
+  animation: none;
+}
+
+.extract-progress.is-error .extract-progress-fill {
+  width: 100%;
+  transform: translateX(0);
+  background: color-mix(in srgb, var(--danger) 72%, transparent);
+  animation: none;
+}
+
 .full-width {
   grid-column: 1 / -1;
 }
@@ -1081,6 +1238,13 @@ button:hover {
 
 button:active {
   transform: translateY(1px);
+}
+
+button:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+  filter: none;
+  transform: none;
 }
 
 button.secondary {
@@ -1196,6 +1360,22 @@ th {
   font-weight: 640;
   text-transform: uppercase;
   letter-spacing: 0.07em;
+}
+th[data-sort] {
+  cursor: pointer;
+  user-select: none;
+}
+th[data-sort]::after {
+  content: " ⇅";
+  opacity: 0.3;
+}
+th[data-sort].sort-active[data-sort-dir="asc"]::after {
+  content: " ▲";
+  opacity: 1;
+}
+th[data-sort].sort-active[data-sort-dir="desc"]::after {
+  content: " ▼";
+  opacity: 1;
 }
 
 tbody tr {
@@ -1334,9 +1514,37 @@ tbody tr:hover {
 
 .deadline-cell {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.deadline-main {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 5px;
+}
+.deadline-year {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.deadline-time-label {
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+.deadline-no-date {
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-style: italic;
+}
+.table-deadline-edit {
+  cursor: pointer;
+}
+.table-deadline-edit .deadline-display:hover .deadline-main {
+  text-decoration: underline dotted;
 }
 
 .deadline-badge {
@@ -1414,6 +1622,15 @@ tbody tr:hover {
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes extract-progress-slide {
+  from {
+    transform: translateX(-130%);
+  }
+  to {
+    transform: translateX(290%);
   }
 }
 
@@ -1518,10 +1735,6 @@ tbody tr:hover {
     width: fit-content;
   }
 
-  .auth-grid {
-    grid-template-columns: 1fr;
-  }
-
   .landing-grid,
   .flow-steps {
     grid-template-columns: 1fr;
@@ -1578,4 +1791,60 @@ tbody tr:hover {
   .filter-field {
     width: 100%;
   }
+}
+
+/* ── Deadline dialog ── */
+#deadlineDialog {
+  border: none;
+  border-radius: 14px;
+  padding: 24px;
+  background: var(--surface-strong);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  min-width: 300px;
+}
+#deadlineDialog::backdrop {
+  background: rgba(0,0,0,0.35);
+}
+#deadlineDialogMsg {
+  margin: 0 0 16px;
+  font-weight: 580;
+}
+.deadline-dialog-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.deadline-dialog-row input {
+  flex: 1;
+  min-width: 0;
+}
+.deadline-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.deadline-dialog-actions button[value="keep"] {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+/* ── Inline deadline inputs ── */
+.table-deadline-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.deadline-date-input,
+.deadline-time-input {
+  font-size: 0.82rem;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  width: 100%;
+}
+.deadline-time-input {
+  color: var(--muted);
 }

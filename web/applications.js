@@ -10,6 +10,7 @@ const STATUSES = [
 ];
 
 const THEME_KEY = "internly-theme";
+const SORT_KEY = "internly-apps-sort";
 const appsSearch = document.getElementById("appsSearch");
 const appsFilterStatus = document.getElementById("appsFilterStatus");
 const appsSort = document.getElementById("appsSort");
@@ -112,23 +113,24 @@ function getUrgencyClass(days) {
   return "";
 }
 
+const MONTH_NAMES_FULL = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
 function renderDeadlineCell(deadline, deadlineTime = null) {
-  const timeLabel = sanitize(deadlineTime || "");
   const parsed = parseDeadline(deadline);
   if (!parsed) {
-    if (!deadline) return timeLabel;
-    if (!timeLabel) return sanitize(deadline);
-    return `${sanitize(deadline)} ${timeLabel}`;
+    return `<div class="deadline-cell"><span class="deadline-no-date">No deadline</span></div>`;
   }
   const days = getDaysUntil(parsed);
   const urgencyClass = getUrgencyClass(days);
   const classAttr = urgencyClass ? ` ${urgencyClass}` : "";
-  const dateLabel = timeLabel
-    ? `${sanitize(deadline)} ${timeLabel}`
-    : sanitize(deadline);
+  const day = parsed.getDate();
+  const month = MONTH_NAMES_FULL[parsed.getMonth()];
+  const year = parsed.getFullYear();
+  const timePart = deadlineTime ? `<span class="deadline-time-label">${sanitize(deadlineTime)}</span>` : "";
   return `
     <div class="deadline-cell">
-      <span>${dateLabel}</span>
+      <span class="deadline-main">${day} ${month}${timePart}</span>
+      <span class="deadline-year">${year}</span>
       <span class="deadline-badge${classAttr}">${sanitize(getUrgencyLabel(days))}</span>
     </div>
   `;
@@ -390,10 +392,13 @@ function renderRows(viewRows) {
         <td>${sanitize(item.company)}</td>
         <td>${sanitize(item.role)}</td>
         <td>${sanitize(item.location || "")}</td>
-        <td class="table-deadline">${renderDeadlineCell(
-          item.deadline,
-          item.deadline_time
-        )}</td>
+        <td class="table-deadline table-deadline-edit" data-deadline-id="${Number(item.id)}">
+          <div class="deadline-display">${renderDeadlineCell(item.deadline, item.deadline_time)}</div>
+          <div class="deadline-inputs hidden">
+            <input type="date" class="deadline-date-input" value="${sanitize(item.deadline || "")}" />
+            <input type="time" class="deadline-time-input" value="${sanitize(item.deadline_time || "")}" />
+          </div>
+        </td>
         <td>
           <select data-status-id="${Number(item.id)}" class="table-status ${statusClassName(
             item.status
@@ -440,7 +445,14 @@ async function loadApplications() {
 
 appsSearch.addEventListener("input", renderAll);
 appsFilterStatus.addEventListener("change", renderAll);
-appsSort.addEventListener("change", renderAll);
+const savedSort = window.localStorage.getItem(SORT_KEY);
+if (savedSort && appsSort.querySelector(`option[value="${savedSort}"]`)) {
+  appsSort.value = savedSort;
+}
+appsSort.addEventListener("change", () => {
+  window.localStorage.setItem(SORT_KEY, appsSort.value);
+  renderAll();
+});
 
 if (downloadTemplateBtn) {
   downloadTemplateBtn.addEventListener("click", async () => {
@@ -516,9 +528,86 @@ appsTbody.addEventListener("change", async (event) => {
     }
     renderAll();
     showToast("Status updated.");
+
+    const dialog = document.getElementById("deadlineDialog");
+    const dialogForm = document.getElementById("deadlineDialogForm");
+    const dialogDate = document.getElementById("deadlineDialogDate");
+    const dialogTime = document.getElementById("deadlineDialogTime");
+    if (dialog && dialogForm) {
+      const existing = index >= 0 ? appsCache[index] : null;
+      dialogDate.value = existing?.deadline || "";
+      dialogTime.value = existing?.deadline_time || "";
+      dialog.showModal();
+      await new Promise((resolve) => {
+        dialogForm.onsubmit = async (e) => {
+          const choice = e.submitter?.value;
+          dialog.close();
+          if (choice === "update") {
+            const newDeadline = dialogDate.value || null;
+            const newTime = dialogTime.value || null;
+            await api(`/api/applications/${safeId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ deadline: newDeadline, deadline_time: newTime }),
+            });
+            if (index >= 0) {
+              appsCache[index].deadline = newDeadline;
+              appsCache[index].deadline_time = newTime;
+              appsCache[index].updated_at = new Date().toISOString();
+            }
+            renderAll();
+            showToast("Deadline updated.");
+          }
+          resolve();
+        };
+      });
+    }
   } catch (error) {
     showToast(error.message, true);
     await loadApplications().catch((err) => console.error("Reload failed:", err));
+  }
+});
+
+appsTbody.addEventListener("dblclick", (event) => {
+  const cell = event.target.closest("td.table-deadline-edit");
+  if (!cell || event.target.closest(".deadline-inputs")) return;
+  const display = cell.querySelector(".deadline-display");
+  const inputs = cell.querySelector(".deadline-inputs");
+  if (display && inputs) {
+    display.classList.add("hidden");
+    inputs.classList.remove("hidden");
+    inputs.querySelector(".deadline-date-input")?.focus();
+  }
+});
+
+appsTbody.addEventListener("change", async (event) => {
+  const target = event.target;
+  if (target.classList.contains("deadline-date-input") || target.classList.contains("deadline-time-input")) {
+    const cell = target.closest("td[data-deadline-id]");
+    if (!cell) return;
+    const safeId = parseInt(cell.dataset.deadlineId, 10);
+    if (!Number.isFinite(safeId)) return;
+    const dateVal = cell.querySelector(".deadline-date-input")?.value || null;
+    const timeVal = cell.querySelector(".deadline-time-input")?.value || null;
+    try {
+      await api(`/api/applications/${safeId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ deadline: dateVal || null, deadline_time: timeVal || null }),
+      });
+      const index = appsCache.findIndex((item) => item.id === safeId);
+      if (index >= 0) {
+        appsCache[index].deadline = dateVal || null;
+        appsCache[index].deadline_time = timeVal || null;
+        appsCache[index].updated_at = new Date().toISOString();
+      }
+      const display = cell.querySelector(".deadline-display");
+      if (display) display.innerHTML = renderDeadlineCell(dateVal, timeVal);
+      cell.querySelector(".deadline-inputs")?.classList.add("hidden");
+      cell.querySelector(".deadline-display")?.classList.remove("hidden");
+      showToast("Deadline updated.");
+    } catch (error) {
+      showToast(error.message, true);
+    }
+    return;
   }
 });
 

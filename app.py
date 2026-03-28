@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "internly.db"
+DB_PATH = Path(os.environ.get("INTERNLY_DB_PATH", "/home/ubuntu/internly-data/internly.db"))
 WEB_DIR = BASE_DIR / "web"
 
 

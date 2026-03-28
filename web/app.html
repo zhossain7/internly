@@ -174,11 +174,10 @@
               <label>
                 Extraction Mode
                 <select id="linkExtractionMode">
-                  <option value="local" selected>Local OCR</option>
+                  <option value="groq" selected>Groq</option>
                   <option value="auto">Auto (Gemini/Groq if configured)</option>
                   <option value="gemini">Gemini 2.5 Flash</option>
-                  <option value="groq">Groq</option>
-                  <option value="granite">Granite (Ollama Local)</option>
+                  <option value="local">Local OCR</option>
                 </select>
               </label>
               <button type="submit">Extract Fields</button>
@@ -223,11 +222,10 @@
               <label>
                 Extraction Mode
                 <select id="fileExtractionMode">
-                  <option value="local" selected>Local OCR</option>
+                  <option value="groq" selected>Groq</option>
                   <option value="auto">Auto (Gemini/Groq if configured)</option>
                   <option value="gemini">Gemini 2.5 Flash</option>
-                  <option value="groq">Groq</option>
-                  <option value="granite">Granite (Ollama Local)</option>
+                  <option value="local">Local OCR</option>
                 </select>
               </label>
               <button type="submit">Extract Fields</button>
@@ -268,10 +266,10 @@
           <table>
             <thead>
               <tr>
-                <th>Company</th>
-                <th>Role</th>
-                <th class="table-deadline">Deadline</th>
-                <th>Status</th>
+                <th data-sort="company">Company</th>
+                <th data-sort="role">Role</th>
+                <th class="table-deadline" data-sort="deadline">Deadline</th>
+                <th data-sort="status">Status</th>
                 <th>Source</th>
               </tr>
             </thead>
@@ -282,6 +280,20 @@
     </main>
 
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+    <dialog id="deadlineDialog">
+      <form id="deadlineDialogForm" method="dialog">
+        <p id="deadlineDialogMsg">Status updated. Update the deadline?</p>
+        <div class="deadline-dialog-row">
+          <input type="date" id="deadlineDialogDate" />
+          <input type="time" id="deadlineDialogTime" placeholder="Time (optional)" />
+        </div>
+        <div class="deadline-dialog-actions">
+          <button type="submit" value="update" class="btn-primary">Update Deadline</button>
+          <button type="submit" value="keep">Keep Existing</button>
+        </div>
+      </form>
+    </dialog>
     <script src="/app.js" defer></script>
   </body>
 </html>
